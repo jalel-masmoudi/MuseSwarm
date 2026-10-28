@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "muse-swarm": {
+      "command": "node",
+      "args": ["src/mcp-server.js"]
+    }
+  }
+}

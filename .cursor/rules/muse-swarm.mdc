@@ -1,0 +1,27 @@
+---
+description: MuseSwarm Multi-Agent Bot-to-Bot Collaboration Rules & Cursor Integration (Meta Muse Spark Open on Baseten)
+globs: **/*
+alwaysApply: true
+---
+
+# MuseSwarm Multi-Agent Orchestration Rules
+
+This repository powers **MuseSwarm**, built for the **Meta Global AI Developer Hackathon** (Indie Developer Track, Theme 2: Push the Frontier).
+
+## Model & Inference Stack
+- **Model:** `meta-models/muse-spark-open-1026` (Meta's 816B MoE / 42B active parameter `Muse Spark Open` model)
+- **Inference Provider:** Baseten OpenAI-compatible API (`https://inference.baseten.co/v1`, up to 2M TPM)
+- **Credentials:** Loaded strictly from `.env` (`BASETEN_API_KEY`); never hardcode keys in source files.
+
+## Peer Specialist Bots
+1. `@architect` (`profiles/architect/SOUL.md`): System Architect & Kanban Arbiter. Writes `brief.md` and `runbook.md`, creates Kanban tasks, and arbitrates design decisions.
+2. `@builder` (`profiles/builder/SOUL.md`): Full-Stack Implementation Specialist. Implements isomorphic `app.js`, interactive `index.html`, and automated unit tests in `test.js`.
+3. `@verifier` (`profiles/verifier/SOUL.md`): Autonomous QA & Runtime Critic. Executes `node test.js` in the workspace sandbox, checks syntax, and triggers rework loops when defects are found.
+4. `@lead` (`profiles/lead/SOUL.md`): Synthesizer & DevRel Lead. Produces `README.md` and release summaries.
+
+## Using MuseSwarm Inside Cursor
+- **MCP Tools:** Use `muse_swarm_list_agents`, `muse_swarm_ask_agent`, and `muse_swarm_cobuild` from the `muse-swarm` MCP server configured in `.cursor/mcp.json`.
+- **Terminal CLI:**
+  - `node src/cli.js doctor` — Verify Baseten API key & live `meta-models/muse-spark-open-1026` handshake.
+  - `node src/cli.js run --demo` — Run a full multi-agent bot-to-bot software build session.
+  - `npm start` — Launch the real-time MuseSwarm Web Dashboard on `http://localhost:4321`.

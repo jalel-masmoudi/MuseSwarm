@@ -1,0 +1,31 @@
+{
+  "name": "muse-swarm",
+  "version": "1.1.0",
+  "description": "MuseSwarm — Multi-Agent Bot-to-Bot Software Engineering Collaboration Engine powered by Meta Muse Spark Open (meta-models/muse-spark-open-1026) on Baseten + Cursor MCP & Muse Code CLI integration",
+  "main": "src/index.js",
+  "bin": {
+    "muse-swarm": "./src/cli.js",
+    "muse-code-swarm": "./src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "cli": "node src/cli.js",
+    "doctor": "node src/cli.js doctor",
+    "benchmark": "node src/cli.js benchmark",
+    "demo": "node src/cli.js run --demo",
+    "mcp": "node src/mcp-server.js",
+    "test": "node src/test-e2e.js"
+  },
+  "keywords": [
+    "meta",
+    "muse-spark-open",
+    "muse-code",
+    "baseten",
+    "multi-agent",
+    "cursor",
+    "mcp",
+    "hackathon"
+  ],
+  "author": "Med Jalel Masmoudi",
+  "license": "MIT"
+}
