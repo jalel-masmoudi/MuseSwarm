@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "model": "meta-models/muse-spark-open-1026",
+  "reasoning_effort": "high",
+  "agents": {
+    "execution_capacity": 16
+  },
+  "mcp_servers": {
+    "muse-swarm": {
+      "transport": "stdio",
+      "command": "node",
+      "args": ["src/mcp-server.js"],
+      "enabled": true,
+      "mode": "optional"
+    }
+  }
+}

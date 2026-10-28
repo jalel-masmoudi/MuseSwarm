@@ -1,0 +1,8 @@
+{
+  "hooks": [
+    {
+      "event": "SessionStart",
+      "command": "node src/cli.js peers"
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "sessionId": "swarm-mvsjs7ys-eq3z",
+  "slug": "sprint-priority-demo",
+  "prompt": "Build a Real-Time Engineering Sprint & Incident Priority Engine with weighted impact/urgency/effort scoring, SLA detector, interactive dark-mode UI (index.html), isomorphic core module (app.js), and unit tests (test.js).",
+  "modelId": "meta-models/muse-spark-open-1026",
+  "endpoint": "https://inference.baseten.co/v1",
+  "mode": "offline-deterministic-fallback",
+  "status": "completed",
+  "durationMs": 220,
+  "reworkCycles": 0,
+  "parallelFanouts": 0,
+  "messagesExchanged": 7,
+  "kanbanTasksTotal": 3,
+  "kanbanTasksDone": 3,
+  "filesGenerated": [
+    "brief.md",
+    "runbook.md",
+    "app.js",
+    "test.js",
+    "index.html",
+    "README.md"
+  ],
+  "totalBytesWritten": 8036,
+  "verification": {
+    "runsCount": 1,
+    "finalPassed": true,
+    "checksPassed": 4,
+    "checksTotal": 4
+  },
+  "rubric": {
+    "verdict": "VERIFIED_PASS",
+    "qualityScore": 97,
+    "rubric": {
+      "correctness": 25,
+      "testCoverage": 24,
+      "architectureAdherence": 24,
+      "uiCompleteness": 24
+    },
+    "invariants": {
+      "hasCommonJs": true,
+      "hasGlobalExport": true,
+      "zeroExternalDeps": true,
+      "hasScriptTag": true,
+      "hasInteractiveControls": true,
+      "assertCount": 8
+    }
+  },
+  "telemetry": {
+    "totalCalls": 4,
+    "liveCalls": 0,
+    "simulatedCalls": 4,
+    "totalTokensUsed": 1770,
+    "totalReasoningTokens": 165,
+    "currentTpm": 1770,
+    "tpmLimit": 2000000,
+    "tpmUtilizationPct": 0.089,
+    "avgLatencyMs": 12,
+    "p50LatencyMs": 12,
+    "p95LatencyMs": 12,
+    "retryCount": 0
+  },
+  "generatedAt": "2026-10-28T20:09:05.072Z"
+}

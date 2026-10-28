@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>MuseSwarm Sprint & Incident Priority Studio</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0b0f19; color: #f1f5f9; margin: 0; padding: 20px; }
+    .card { max-width: 820px; margin: 0 auto; background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 20px; }
+    h1 { margin-top: 0; font-size: 1.3rem; color: #818cf8; }
+    .metrics { display: flex; gap: 12px; margin-bottom: 16px; }
+    .metric { flex: 1; background: #1e293b; padding: 10px 14px; border-radius: 8px; font-size: 0.82rem; }
+    .metric strong { display: block; font-size: 1.2rem; color: #38bdf8; }
+    .row { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+    input { background: #1f2937; border: 1px solid #374151; color: #fff; padding: 8px 10px; border-radius: 6px; }
+    button { background: #6366f1; color: #fff; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+    .item { display: flex; justify-content: space-between; padding: 10px 12px; background: #1e293b; border-radius: 8px; margin-bottom: 8px; align-items: center; border-left: 4px solid #6366f1; }
+    .item.breached { border-left-color: #ef4444; background: rgba(239, 68, 68, 0.12); }
+    .score { color: #34d399; font-weight: 700; }
+    .sla-tag { font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin-left: 8px; background: #ef4444; color: #fff; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Sprint & Incident Priority Engine (Co-Built by MuseSwarm)</h1>
+    <div class="metrics" id="metrics"></div>
+    <div class="row">
+      <input id="title" placeholder="Incident or sprint task..." style="flex:1" />
+      <input id="impact" type="number" min="1" max="10" value="9" style="width:64px" title="Impact (1-10)" />
+      <input id="urgency" type="number" min="1" max="10" value="8" style="width:64px" title="Urgency (1-10)" />
+      <input id="effort" type="number" min="1" max="10" value="2" style="width:64px" title="Effort (1-10)" />
+      <input id="sla" type="number" min="5" value="30" style="width:70px" title="SLA Minutes" />
+      <input id="elapsed" type="number" min="0" value="45" style="width:70px" title="Elapsed Minutes" />
+      <button onclick="addNew()">Add Item</button>
+    </div>
+    <div id="list"></div>
+  </div>
+  <script src="app.js"></script>
+  <script>
+    const engine = new globalThis.AppCore.TaskPriorityEngine();
+    engine.addItem({ title: 'Mitigate Baseten Gateway Latency Spike', impact: 10, urgency: 10, effort: 2, slaMinutes: 15, elapsedMinutes: 28 });
+    engine.addItem({ title: 'Wire Cursor MCP Server Tools', impact: 9, urgency: 8, effort: 2, slaMinutes: 60, elapsedMinutes: 20 });
+    engine.addItem({ title: 'Add Kanban Audit Trail Persistence', impact: 8, urgency: 7, effort: 3, slaMinutes: 90, elapsedMinutes: 35 });
+
+    function render() {
+      const s = engine.getSummary();
+      document.getElementById('metrics').innerHTML =
+        '<div class="metric">Total Tasks<strong>' + s.total + '</strong></div>' +
+        '<div class="metric">Open<strong>' + s.open + '</strong></div>' +
+        '<div class="metric">SLA Breaches<strong style="color:#f87171">' + s.breachedCount + '</strong></div>';
+      const list = document.getElementById('list');
+      list.innerHTML = engine.getRankedItems().map(i =>
+        '<div class="item ' + (i.breached ? 'breached' : '') + '">' +
+          '<span><strong>' + i.title + '</strong> <small>(Impact ' + i.impact + ' • Urgency ' + i.urgency + ' • SLA ' + i.elapsedMinutes + '/' + i.slaMinutes + 'm)</small>' +
+          (i.breached ? '<span class="sla-tag">SLA BREACH</span>' : '') + '</span>' +
+          '<span class="score">Score: ' + i.score + '</span>' +
+        '</div>'
+      ).join('');
+    }
+    function addNew() {
+      const t = document.getElementById('title').value;
+      if (!t) return;
+      engine.addItem({
+        title: t,
+        impact: Number(document.getElementById('impact').value),
+        urgency: Number(document.getElementById('urgency').value),
+        effort: Number(document.getElementById('effort').value),
+        slaMinutes: Number(document.getElementById('sla').value),
+        elapsedMinutes: Number(document.getElementById('elapsed').value),
+      });
+      document.getElementById('title').value = '';
+      render();
+    }
+    render();
+  </script>
+</body>
+</html>

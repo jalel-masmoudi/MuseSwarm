@@ -1,0 +1,50 @@
+const fs = require('fs');
+const path = require('path');
+
+function loadEnv() {
+  const envPaths = [
+    path.resolve(process.cwd(), '.env'),
+    path.resolve(__dirname, '..', '.env'),
+  ];
+  for (const p of envPaths) {
+    if (fs.existsSync(p)) {
+      const content = fs.readFileSync(p, 'utf8');
+      for (const line of content.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx > 0) {
+          const key = trimmed.slice(0, eqIdx).trim();
+          let val = trimmed.slice(eqIdx + 1).trim();
+          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+          }
+          if (!process.env[key]) {
+            process.env[key] = val;
+          }
+        }
+      }
+      break;
+    }
+  }
+}
+
+loadEnv();
+
+const CONFIG = {
+  basetenApiKey: process.env.BASETEN_API_KEY || process.env.META_API_KEY || '',
+  basetenBaseUrl: (process.env.BASETEN_BASE_URL || 'https://inference.baseten.co/v1').replace(/\/+$/, ''),
+  modelId: process.env.MUSE_MODEL_ID || 'meta-models/muse-spark-open-1026',
+  port: parseInt(process.env.PORT || '4321', 10),
+  tpmLimit: parseInt(process.env.MUSE_SWARM_TPM_LIMIT || '2000000', 10),
+  requestTimeoutMs: parseInt(process.env.MUSE_SWARM_TIMEOUT_MS || '45000', 10),
+  maxRetries: parseInt(process.env.MUSE_SWARM_MAX_RETRIES || '3', 10),
+  retryBaseDelayMs: parseInt(process.env.MUSE_SWARM_RETRY_BASE_MS || '400', 10),
+  maxReworkLoops: parseInt(process.env.MUSE_SWARM_MAX_REWORK || '2', 10),
+  allowOfflineFallback: process.env.MUSE_SWARM_OFFLINE_FALLBACK !== 'false',
+  rootDir: path.resolve(__dirname, '..'),
+  workspacesDir: path.resolve(__dirname, '..', 'workspaces'),
+  profilesDir: path.resolve(__dirname, '..', 'profiles'),
+};
+
+module.exports = { CONFIG, loadEnv };
