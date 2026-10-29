@@ -29,7 +29,7 @@ function printBanner() {
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║   MUSE SWARM — Multi-Agent Bot-to-Bot Software Engineering Engine        ║
 ║   Model: ${CONFIG.modelId.padEnd(36)} (Baseten 2M TPM) ║
-║   Harness: Muse Code Session Bus + Auditable Kanban + Cursor MCP         ║
+║   Harness: MuseSwarm Session Bus + Auditable Kanban + Cursor MCP         ║
 ╚══════════════════════════════════════════════════════════════════════════╝${COLORS.reset}`);
 }
 
