@@ -11,6 +11,7 @@ const {
   applyPass1Fault,
   serializeScenarios,
 } = require('./scenarios');
+const { extractJson, extractFilePatch } = require('./reply-parser');
 
 const AGENT_PROFILES = {
   architect: {
@@ -59,27 +60,65 @@ function loadSoul(agentId) {
   return `You are @${agentId} in a MuseSwarm multi-agent engineering team.`;
 }
 
-function extractJsonBlock(text) {
-  if (!text) return null;
-  // 1. Try fenced ```json ... ```
-  const fencedMatches = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
-  for (const m of fencedMatches) {
-    if (m[1]) {
-      try {
-        return JSON.parse(m[1].trim());
-      } catch (_) {}
+function extractJsonBlock(text, prefer = null) {
+  return extractJson(text, prefer);
+}
+
+// Who produced the bytes of a write. Only a non-simulated Baseten reply counts as 'model'.
+function replySource(res) {
+  return res && res.simulated === false ? 'model' : 'offline_fixture';
+}
+
+function recordModelReply(session, { agent, phase, res, parse, reworkAttempt = 0 }) {
+  if (!session.modelReplies) session.modelReplies = [];
+  const entry = {
+    agent,
+    phase,
+    reworkAttempt,
+    simulated: res?.simulated !== false,
+    model: res?.model || null,
+    finishReason: res?.finishReason || null,
+    truncated: res?.finishReason === 'length',
+    content: String(res?.content || ''),
+    reasoningContent: String(res?.reasoningContent || ''),
+    usage: res?.usage || null,
+    latencyMs: res?.latencyMs || 0,
+    parse: parse || null,
+    recordedAt: new Date().toISOString(),
+  };
+  session.modelReplies.push(entry);
+  return entry;
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Files named in the failing output (stack frames, syntax checks) plus their local require() deps,
+// so a failure surfacing in test.js also hands @builder the module under test (e.g. domain.js).
+function reworkTargetFiles(session, testRun) {
+  const jsFiles = Object.keys(session.files).filter((p) => p.endsWith('.js'));
+  const output = `${testRun.stderr || ''}\n${testRun.stdout || ''}`;
+  const hits = new Set();
+  for (const p of jsFiles) {
+    if (new RegExp(`(^|[\\\\/\\s(])${escapeRegExp(p)}(:\\d+|\\b)`).test(output)) hits.add(p);
+  }
+  for (const check of testRun.checks || []) {
+    if (!check.passed && check.name.startsWith('syntax:')) hits.add(check.name.slice('syntax:'.length));
+  }
+  if (!hits.size) jsFiles.forEach((p) => hits.add(p));
+  const queue = [...hits];
+  while (queue.length) {
+    const src = session.files[queue.shift()]?.content || '';
+    for (const m of src.matchAll(/require\(\s*['"]\.\/([\w./-]+?)(?:\.js)?['"]\s*\)/g)) {
+      const dep = `${m[1]}.js`;
+      if (session.files[dep] && !hits.has(dep)) {
+        hits.add(dep);
+        queue.push(dep);
+      }
     }
   }
-  // 2. Try finding balanced or outer { ... }
-  const firstBrace = text.indexOf('{');
-  const lastBrace = text.lastIndexOf('}');
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    const candidate = text.slice(firstBrace, lastBrace + 1);
-    try {
-      return JSON.parse(candidate);
-    } catch (_) {}
-  }
-  return null;
+  return jsFiles.filter((p) => hits.has(p));
 }
 
 // ponytail: O(n*m) line LCS. Fine for workspace files under a few thousand lines; switch to Myers if artifacts grow past that.
@@ -169,7 +208,7 @@ function lineSnippet(lines, lineNo, radius = 3) {
   return lines.slice(start, end).join('\n');
 }
 
-function buildReworkDiff({ filePath, before, after, author, reworkAttempt }) {
+function buildReworkDiff({ filePath, before, after, author, source = 'unspecified', reworkAttempt }) {
   const beforeLines = String(before).replace(/\r\n/g, '\n').split('\n');
   const afterLines = String(after).replace(/\r\n/g, '\n').split('\n');
   const ops = diffLineOps(beforeLines, afterLines);
@@ -178,6 +217,9 @@ function buildReworkDiff({ filePath, before, after, author, reworkAttempt }) {
   return {
     path: filePath,
     author,
+    source,
+    fixedBy: source === 'model' ? `${author} (Muse Spark reply)` : `engine (${source})`,
+    verifiedPass: null,
     passFrom: 1,
     passTo: (reworkAttempt || 1) + 1,
     reworkAttempt: reworkAttempt || 1,
@@ -429,7 +471,10 @@ class MuseSwarmEngine extends EventEmitter {
     return summary;
   }
 
-  writeWorkspaceFile(session, relPath, content, authorAgent) {
+  // source: 'model' (parsed from a live Muse Spark reply), 'offline_fixture' (simulated reply),
+  // or an engine-authored write: 'scenario_fixture', 'fault_injection', 'deterministic_restore',
+  // 'engine_fallback', 'engine_summary'.
+  writeWorkspaceFile(session, relPath, content, authorAgent, source = 'unspecified') {
     const safeRel = relPath.replace(/^(\.\.(\/|\\|$))+/, '').replace(/^\/+/, '');
     const fullPath = path.join(session.workspaceDir, safeRel);
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
@@ -446,6 +491,8 @@ class MuseSwarmEngine extends EventEmitter {
     history.push({
       revision: history.length + 1,
       author: authorAgent,
+      source,
+      reworkAttempt: session._captureReworkDiff ? session.reworkCycles || 0 : 0,
       updatedAt,
       bytes: Buffer.byteLength(text, 'utf8'),
       pass,
@@ -459,6 +506,7 @@ class MuseSwarmEngine extends EventEmitter {
         before: previous.content,
         after: text,
         author: authorAgent,
+        source,
         reworkAttempt: session.reworkCycles || 1,
       });
       session.reworkDiffs.push(diffMeta);
@@ -468,6 +516,7 @@ class MuseSwarmEngine extends EventEmitter {
       path: safeRel,
       size: Buffer.byteLength(text, 'utf8'),
       author: authorAgent,
+      source,
       updatedAt,
       content: text,
       diff: diffMeta ? diffMeta.diff : (previous?.diff || null),
@@ -478,6 +527,7 @@ class MuseSwarmEngine extends EventEmitter {
     this.emitEvent(session, 'file_written', {
       path: safeRel,
       author: authorAgent,
+      source,
       size: session.files[safeRel].size,
       revision: history.length,
       reworkDiff: Boolean(diffMeta),
@@ -492,6 +542,7 @@ class MuseSwarmEngine extends EventEmitter {
       pass: label.pass || (session.reworkCycles || 0) + 1,
       phase: label.phase || 'verify',
       reworkAttempt: label.reworkAttempt || 0,
+      candidate: label.candidate || null,
       passed: true,
       checks: [],
       passedCount: 0,
@@ -633,6 +684,21 @@ class MuseSwarmEngine extends EventEmitter {
       durationMs,
       scenarioId: session.scenarioId || null,
       reworkCycles: session.reworkCycles || 0,
+      healedBy: (session.reworkSummary || []).map((c) => c.healedBy),
+      reworkSummary: session.reworkSummary || [],
+      fileAttribution: Object.fromEntries(
+        Object.values(session.files).map((f) => [f.path, { author: f.author, source: f.source || 'unspecified' }])
+      ),
+      modelReplies: (session.modelReplies || []).map((r) => ({
+        agent: r.agent,
+        phase: r.phase,
+        reworkAttempt: r.reworkAttempt,
+        simulated: r.simulated,
+        finishReason: r.finishReason,
+        truncated: r.truncated,
+        contentChars: r.content.length,
+        parse: r.parse,
+      })),
       reworkDiffs: session.reworkDiffs || [],
       fileHistory: session.fileHistory || {},
       parallelFanouts: (session.parallelTasksRun || []).length,
@@ -752,7 +818,7 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with the followin
 
       const archRes = await this.client.chatCompletion({
         agentId: 'architect',
-        maxTokens: 3500,
+        maxTokens: 8000,
         temperature: 0.2,
         onProgress,
         messages: [
@@ -761,7 +827,14 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with the followin
         ],
       });
 
-      const archPlan = extractJsonBlock(archRes.content) || {
+      const archParsed = extractJsonBlock(archRes.content, (o) => typeof o.briefMd === 'string');
+      recordModelReply(session, {
+        agent: '@architect',
+        phase: 'architecture',
+        res: archRes,
+        parse: { parsedJson: Boolean(archParsed), keys: archParsed ? Object.keys(archParsed) : [] },
+      });
+      const archDefault = {
         projectTitle: 'MuseSwarm Generated Application',
         briefMd: `# Project Brief\n\n**Request:** ${session.prompt}\n\n## Architecture\n- \`app.js\`: Isomorphic core engine (Node.js CommonJS export + browser \`window.AppCore\`).\n- \`index.html\`: Interactive modern UI dashboard.\n- \`test.js\`: Automated zero-dependency Node.js test suite using \`assert\`.`,
         runbookMd: `# Runbook\n\n## Files Required\n1. \`app.js\` — Core logic module exported via \`if (typeof module !== 'undefined') module.exports = ...\` and attached to \`window\`.\n2. \`index.html\` — Standalone interactive web app loading \`app.js\`.\n3. \`test.js\` — Node.js test suite that requires \`./app.js\`, runs assertions, and prints PASS.\n\n## Do NOT\n- Do NOT require external npm packages.\n- Do NOT leave placeholder TODOs.`,
@@ -793,14 +866,17 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with the followin
         messageToBuilder: `@builder I have written brief.md and runbook.md for "${session.prompt}". Please implement app.js (compatible with both Node CommonJS and browser window), index.html, and test.js for TASK-1.`,
         messageToVerifier: `@verifier Once @builder completes TASK-1, run the test suite and audit app.js and index.html against our acceptance criteria.`,
       };
+      const archPlan = { ...archDefault, ...(archParsed || {}) };
+      const archDocSource = (key) =>
+        typeof archParsed?.[key] === 'string' ? replySource(archRes) : 'engine_fallback';
 
       if (session.scenarioId) {
         session._cleanArtifacts = buildScenarioArtifacts(session.scenarioId);
-        this.writeWorkspaceFile(session, 'brief.md', session._cleanArtifacts['brief.md'], '@architect');
-        this.writeWorkspaceFile(session, 'runbook.md', session._cleanArtifacts['runbook.md'], '@architect');
+        this.writeWorkspaceFile(session, 'brief.md', session._cleanArtifacts['brief.md'], 'engine', 'scenario_fixture');
+        this.writeWorkspaceFile(session, 'runbook.md', session._cleanArtifacts['runbook.md'], 'engine', 'scenario_fixture');
       } else {
-        this.writeWorkspaceFile(session, 'brief.md', archPlan.briefMd, '@architect');
-        this.writeWorkspaceFile(session, 'runbook.md', archPlan.runbookMd, '@architect');
+        this.writeWorkspaceFile(session, 'brief.md', archPlan.briefMd, archDocSource('briefMd') === 'engine_fallback' ? 'engine' : '@architect', archDocSource('briefMd'));
+        this.writeWorkspaceFile(session, 'runbook.md', archPlan.runbookMd, archDocSource('runbookMd') === 'engine_fallback' ? 'engine' : '@architect', archDocSource('runbookMd'));
       }
 
       for (const t of archPlan.kanbanTasks || []) {
@@ -853,20 +929,20 @@ CRITICAL RULES:
 2. \`test.js\` MUST require \`./app.js\` using Node's built-in \`assert\` module, run at least 5 thorough unit/integration tests covering normal and edge cases, print clear \`[PASS]\` lines for each test, and exit with code 0.
 3. \`index.html\` MUST be a sleek, self-contained, modern dark-mode interactive web application that loads \`<script src="app.js"></script>\` and lets a user interactively use all features in the browser.
 
-Return ONLY a valid JSON object inside a \`\`\`json code block with this exact schema:
+Return ONLY one strict JSON object (no prose, no markdown fences). Every file's full source goes in a JSON string, with newlines escaped as \\n and double quotes escaped as \\". Schema:
 {
   "messageToArchitect": "Message to @architect confirming how you implemented the runbook contract.",
   "messageToVerifier": "Message to @verifier (with @verifier mention) handing off TASK-1 for verification and explaining what test.js covers.",
-  "files": {
-    "app.js": "// full javascript source code for app.js",
-    "index.html": "<!DOCTYPE html>...",
-    "test.js": "// full node.js test script using built-in assert"
-  }
+  "files": [
+    { "path": "app.js", "content": "<full source of app.js>" },
+    { "path": "index.html", "content": "<full source of index.html>" },
+    { "path": "test.js", "content": "<full source of test.js>" }
+  ]
 }`;
 
       const builderRes = await this.client.chatCompletion({
         agentId: 'builder',
-        maxTokens: 6000,
+        maxTokens: 16000,
         temperature: 0.2,
         onProgress,
         messages: [
@@ -875,13 +951,23 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with this exact s
         ],
       });
 
-      const builderOut = extractJsonBlock(builderRes.content);
+      const builderPatch = extractFilePatch(builderRes.content, ['app.js', 'index.html', 'test.js']);
+      const builderOut = builderPatch.parsedJson
+        ? { ...(extractJsonBlock(builderRes.content) || {}), files: builderPatch.files }
+        : null;
+      recordModelReply(session, {
+        agent: '@builder',
+        phase: 'build',
+        res: builderRes,
+        parse: { parsedJson: builderPatch.parsedJson, format: builderPatch.format, files: Object.keys(builderPatch.files) },
+      });
+      const builderSource = replySource(builderRes);
       if (session.scenarioId && session._cleanArtifacts) {
         for (const relPath of ['domain.js', 'app.js', 'test.js', 'index.html']) {
-          this.writeWorkspaceFile(session, relPath, session._cleanArtifacts[relPath], '@builder');
+          this.writeWorkspaceFile(session, relPath, session._cleanArtifacts[relPath], 'engine', 'scenario_fixture');
         }
-      } else if (builderOut && builderOut.files && builderOut.files['app.js']) {
-        const fileEntries = Object.entries(builderOut.files).filter(([, code]) => typeof code === 'string');
+      } else if (builderPatch.files['app.js']) {
+        const fileEntries = Object.entries(builderPatch.files).filter(([, code]) => typeof code === 'string');
         await this.runParallelTasks(
           session,
           fileEntries.map(([relPath, code]) => ({
@@ -891,7 +977,7 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with this exact s
             code,
           })),
           async (spec) => {
-            this.writeWorkspaceFile(session, spec.relPath, spec.code, '@builder');
+            this.writeWorkspaceFile(session, spec.relPath, spec.code, '@builder', builderSource);
             return { path: spec.relPath, bytes: Buffer.byteLength(spec.code, 'utf8') };
           }
         );
@@ -940,22 +1026,19 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with this exact s
       this.emitEvent(session, 'agent_active', { agentId: 'verifier', phase: 'Sandbox Verification & QA Audit (TASK-2)' });
 
       let savedCleanFiles = null;
-      let savedBrokenFiles = null;
       if (session.simulateBrokenFirstPass) {
         if (session.scenarioId && session._cleanArtifacts) {
           const fault = applyPass1Fault(session._cleanArtifacts, session.scenarioId);
           savedCleanFiles = { [fault.file]: fault.clean };
-          savedBrokenFiles = { [fault.file]: fault.broken };
-          this.writeWorkspaceFile(session, fault.file, fault.broken, '@builder');
+          this.writeWorkspaceFile(session, fault.file, fault.broken, 'engine', 'fault_injection');
         } else if (session.files['app.js']) {
           const clean = session.files['app.js'].content;
-          const broken = injectGenericPass1Fault(clean);
           savedCleanFiles = { 'app.js': clean };
-          savedBrokenFiles = { 'app.js': broken };
-          this.writeWorkspaceFile(session, 'app.js', broken, '@builder');
+          this.writeWorkspaceFile(session, 'app.js', injectGenericPass1Fault(clean), 'engine', 'fault_injection');
         }
       }
       let testRun = this.runWorkspaceTests(session, { pass: 1, phase: 'pass1_initial' });
+      if (!session.reworkSummary) session.reworkSummary = [];
 
       // Autonomous self-healing rework loop (up to this.maxReworkLoops attempts)
       let reworkAttempt = 0;
@@ -963,19 +1046,20 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with this exact s
         reworkAttempt += 1;
         session.reworkCycles = reworkAttempt;
         session._captureReworkDiff = true;
+        const targets = reworkTargetFiles(session, testRun);
 
         this.updateKanbanTask(session, 'TASK-1', {
           status: 'rework',
           author: '@verifier',
-          comment: `Rework #${reworkAttempt}: Sandbox test failed (${testRun.stderr.slice(0, 220)}). Requesting targeted fix from @builder.`,
+          comment: `Rework #${reworkAttempt}: Sandbox test failed (${testRun.stderr.slice(0, 220)}). Requesting targeted fix from @builder for ${targets.join(', ')}.`,
         });
 
         this.postBotMessage(session, {
           from: '@verifier',
           to: '@builder',
           delivery: 'steer',
-          content: `@builder [Rework Cycle #${reworkAttempt}] Sandbox execution of \`node test.js\` reported an error:\n\`\`\`\n${testRun.stderr.slice(0, 400)}\n\`\`\`\nPlease fix \`app.js\` and \`test.js\` so all syntax and runtime assertions pass cleanly.`,
-          metadata: { phase: 'rework_request', taskId: 'TASK-1', reworkAttempt },
+          content: `@builder [Rework Cycle #${reworkAttempt}] Sandbox execution of \`node test.js\` reported an error:\n\`\`\`\n${testRun.stderr.slice(0, 400)}\n\`\`\`\nPlease patch ${targets.map((t) => `\`${t}\``).join(', ')} so all syntax and runtime assertions pass cleanly.`,
+          metadata: { phase: 'rework_request', taskId: 'TASK-1', reworkAttempt, targetFiles: targets },
         });
 
         this.emitEvent(session, 'agent_active', {
@@ -983,31 +1067,27 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with this exact s
           phase: `Rework Loop Fix #${reworkAttempt} (TASK-1)`,
         });
 
-        const fixPrompt = `The sandbox test runner reported an error in your code for "${session.prompt}" (Rework Attempt #${reworkAttempt}):
-Error Output:
-${testRun.stderr}
+        const fixPrompt = `The sandbox test runner reported an error in your code for "${session.prompt}" (Rework Attempt #${reworkAttempt}).
 
-Failed Checks:
+Failing test output (stdout + stderr):
+${`${testRun.stdout || ''}\n${testRun.stderr || ''}`.trim()}
+
+Failed checks:
 ${JSON.stringify(testRun.checks.filter((c) => !c.passed), null, 2)}
 
-Current app.js:
-${session.files['app.js']?.content || ''}
+Files implicated by the stack trace and their local require() dependencies:
+${targets.map((t) => `--- ${t} ---\n${session.files[t]?.content || ''}`).join('\n\n')}
 
-Current test.js:
-${session.files['test.js']?.content || ''}
-
-Fix the issue and return ONLY a JSON block:
+Find the root cause and patch ONLY these files: ${targets.join(', ')}. The bug may be in a module the test requires (for example domain.js), not in test.js itself.
+Return ONLY one strict JSON object (no prose, no markdown fences). Each patched file's FULL new source goes in a JSON string with newlines escaped as \\n and double quotes escaped as \\". Omit files you did not change. Schema:
 {
-  "messageToVerifier": "Explain the root cause and fix made for @verifier",
-  "files": {
-    "app.js": "// fixed app.js",
-    "test.js": "// fixed test.js"
-  }
+  "messageToVerifier": "Root cause and fix, addressed to @verifier",
+  "files": [ { "path": "${targets[0] || 'app.js'}", "content": "<full patched source>" } ]
 }`;
 
         const fixRes = await this.client.chatCompletion({
           agentId: 'builder',
-          maxTokens: 4500,
+          maxTokens: 16000,
           temperature: 0.1,
           onProgress,
           messages: [
@@ -1016,55 +1096,100 @@ Fix the issue and return ONLY a JSON block:
           ],
         });
 
-        const fixOut = extractJsonBlock(fixRes.content);
-        if (fixOut && fixOut.files) {
-          for (const [relPath, code] of Object.entries(fixOut.files)) {
-            if (typeof code === 'string') {
-              this.writeWorkspaceFile(session, relPath, code, '@builder');
+        const patch = extractFilePatch(fixRes.content, Object.keys(session.files));
+        const patchSource = replySource(fixRes);
+        const changed = Object.entries(patch.files).filter(([relPath, code]) => session.files[relPath]?.content !== code);
+        const prePatch = Object.fromEntries(changed.map(([relPath]) => [relPath, session.files[relPath]?.content]));
+        const runsBefore = session.verificationRuns.length;
+        let modelPatch = changed.length ? 'applied' : Object.keys(patch.files).length ? 'unchanged' : 'missing';
+        let healedBy = null;
+
+        const markDiffs = (fromIdx, passed) => {
+          for (const d of session.reworkDiffs.slice(fromIdx)) d.verifiedPass = passed;
+        };
+
+        if (changed.length) {
+          const diffIdx = session.reworkDiffs.length;
+          for (const [relPath, code] of changed) this.writeWorkspaceFile(session, relPath, code, '@builder', patchSource);
+          testRun = this.runWorkspaceTests(session, {
+            pass: reworkAttempt + 1,
+            phase: 'rework_verify',
+            reworkAttempt,
+            candidate: patchSource,
+          });
+          markDiffs(diffIdx, testRun.passed);
+          modelPatch = testRun.passed ? 'passed' : 'failed';
+          if (testRun.passed) healedBy = patchSource;
+        }
+
+        // Engine fallback: only when the reply had no usable patch, an unchanged patch, or a patch
+        // that still fails. A passing model patch is never overwritten.
+        if (!testRun.passed && savedCleanFiles) {
+          const diffIdx = session.reworkDiffs.length;
+          for (const [relPath, code] of Object.entries(prePatch)) {
+            if (!savedCleanFiles[relPath] && session.files[relPath]?.content !== code) {
+              this.writeWorkspaceFile(session, relPath, code, 'engine', 'deterministic_restore');
             }
           }
-        }
-        // Deterministic heal: if @builder's patch left the injected fault in place (or an earlier
-        // attempt already failed), restore the pre-fault source before the single Pass N+1 verify,
-        // so one rework cycle records exactly one failing and one passing verification.
-        if (savedCleanFiles) {
           for (const [relPath, code] of Object.entries(savedCleanFiles)) {
-            const current = session.files[relPath]?.content;
-            if (current !== code && (current === savedBrokenFiles[relPath] || reworkAttempt > 1)) {
-              this.writeWorkspaceFile(session, relPath, code, '@builder');
+            if (session.files[relPath]?.content !== code) {
+              this.writeWorkspaceFile(session, relPath, code, 'engine', 'deterministic_restore');
             }
           }
+          testRun = this.runWorkspaceTests(session, {
+            pass: reworkAttempt + 1,
+            phase: changed.length ? 'restore_verify' : 'rework_verify',
+            reworkAttempt,
+            candidate: 'deterministic_restore',
+          });
+          markDiffs(diffIdx, testRun.passed);
+          if (testRun.passed) healedBy = 'deterministic_restore';
         }
-        testRun = this.runWorkspaceTests(session, {
-          pass: reworkAttempt + 1,
-          phase: 'rework_verify',
-          reworkAttempt,
-        });
         if (!testRun.passed && reworkAttempt >= this.maxReworkLoops) {
           this.writeFallbackArtifacts(session);
           testRun = this.runWorkspaceTests(session, {
             pass: reworkAttempt + 1,
             phase: 'fallback_verify',
             reworkAttempt,
+            candidate: 'engine_fallback',
           });
+          if (testRun.passed) healedBy = 'engine_fallback';
         }
 
+        const reply = recordModelReply(session, {
+          agent: '@builder',
+          phase: 'rework_fix',
+          reworkAttempt,
+          res: fixRes,
+          parse: { parsedJson: patch.parsedJson, format: patch.format, files: Object.keys(patch.files), targetFiles: targets },
+        });
+        session.reworkSummary.push({
+          reworkAttempt,
+          targetFiles: targets,
+          modelReply: { simulated: reply.simulated, finishReason: reply.finishReason, parsedJson: patch.parsedJson, format: patch.format, files: Object.keys(patch.files) },
+          modelPatch,
+          filesPatchedByModel: changed.map(([relPath]) => relPath),
+          healedBy,
+          verificationRuns: session.verificationRuns.slice(runsBefore).map((r) => ({ run: r.run, phase: r.phase, passed: r.passed })),
+        });
+
+        const modelFixed = healedBy === 'model' || healedBy === 'offline_fixture';
         this.postBotMessage(session, {
           from: '@builder',
           to: '@verifier',
           delivery: 'steer',
-          content:
-            fixOut?.messageToVerifier ||
-            `@verifier Rework #${reworkAttempt} complete — fixed module exports and edge-case assertions. Re-run verification.`,
+          content: modelFixed
+            ? patch.message || `@verifier Rework #${reworkAttempt}: patched ${changed.map(([p]) => p).join(', ')}. Re-run verification.`
+            : `@verifier Rework #${reworkAttempt}: my patch was ${modelPatch}; the engine restored the pre-fault ${Object.keys(savedCleanFiles || {}).join(', ') || 'sources'} (${healedBy || 'no heal'}). Re-run verification.`,
           reasoning: fixRes.reasoningContent,
-          metadata: { phase: 'rework_complete', taskId: 'TASK-1', reworkAttempt, tokens: fixRes.usage?.totalTokens || 0, reasoningTokens: fixRes.usage?.reasoningTokens || 0, latencyMs: fixRes.latencyMs || 0 },
+          metadata: { phase: 'rework_complete', taskId: 'TASK-1', reworkAttempt, healedBy, modelPatch, tokens: fixRes.usage?.totalTokens || 0, reasoningTokens: fixRes.usage?.reasoningTokens || 0, latencyMs: fixRes.latencyMs || 0 },
         });
 
         if (testRun.passed) {
           this.updateKanbanTask(session, 'TASK-1', {
             status: 'done',
-            author: '@builder',
-            comment: `Rework #${reworkAttempt} completed and verified green.`,
+            author: healedBy === 'model' ? '@builder' : 'engine',
+            comment: `Rework #${reworkAttempt} verified green (healed by ${healedBy}).`,
           });
         }
       }
@@ -1112,7 +1237,14 @@ Return ONLY a valid JSON object inside a \`\`\`json code block:
         ],
       });
 
-      const verifierOut = extractJsonBlock(verifierRes.content) || {
+      const verifierParsed = extractJsonBlock(verifierRes.content, (o) => o.verdict !== undefined || o.qualityScore !== undefined);
+      recordModelReply(session, {
+        agent: '@verifier',
+        phase: 'audit',
+        res: verifierRes,
+        parse: { parsedJson: Boolean(verifierParsed), keys: verifierParsed ? Object.keys(verifierParsed) : [] },
+      });
+      const verifierOut = verifierParsed || {
         verdict: 'VERIFIED_PASS',
         qualityScore: rubricEval.totalScore,
         rubric: rubricEval.breakdown,
@@ -1189,13 +1321,26 @@ Return ONLY a valid JSON object inside a \`\`\`json code block:
         ],
       });
 
-      const leadOut = extractJsonBlock(leadRes.content) || {
+      const leadParsed = extractJsonBlock(leadRes.content, (o) => typeof o.readmeMd === 'string');
+      recordModelReply(session, {
+        agent: '@lead',
+        phase: 'release',
+        res: leadRes,
+        parse: { parsedJson: Boolean(leadParsed), keys: leadParsed ? Object.keys(leadParsed) : [] },
+      });
+      const leadDefault = {
         readmeMd: `# ${archPlan.projectTitle || 'MuseSwarm Generated App'}\n\nBuilt autonomously by **MuseSwarm** (\`@architect\`, \`@builder\`, \`@verifier\`, \`@lead\`) powered by Meta's \`Muse Spark Open\` (\`meta-models/muse-spark-open-1026\`) on Baseten.\n\n## Run Tests\n\`\`\`bash\nnode test.js\n\`\`\`\n\n## Open Web App\nOpen \`index.html\` in your browser or via the MuseSwarm Live Preview drawer.`,
         finalBroadcast: `@all Release package synthesized! All Kanban tasks (TASK-1, TASK-2, TASK-3) are complete, verified by @verifier (${session.rubricEvaluation.qualityScore}/100), and documented in README.md.`,
       };
 
-      const readmeMd = session._cleanArtifacts?.['README.md'] || leadOut.readmeMd;
-      this.writeWorkspaceFile(session, 'README.md', readmeMd, '@lead');
+      const leadOut = { ...leadDefault, ...(leadParsed || {}) };
+      if (session._cleanArtifacts?.['README.md']) {
+        this.writeWorkspaceFile(session, 'README.md', session._cleanArtifacts['README.md'], 'engine', 'scenario_fixture');
+      } else if (typeof leadParsed?.readmeMd === 'string') {
+        this.writeWorkspaceFile(session, 'README.md', leadParsed.readmeMd, '@lead', replySource(leadRes));
+      } else {
+        this.writeWorkspaceFile(session, 'README.md', leadDefault.readmeMd, 'engine', 'engine_fallback');
+      }
 
       this.postBotMessage(session, {
         from: '@lead',
@@ -1216,7 +1361,7 @@ Return ONLY a valid JSON object inside a \`\`\`json code block:
       session.completedAt = new Date().toISOString();
 
       const benchmark = this.generateBenchmarkSummary(session);
-      this.writeWorkspaceFile(session, 'benchmark.json', JSON.stringify(benchmark, null, 2), '@lead');
+      this.writeWorkspaceFile(session, 'benchmark.json', JSON.stringify(benchmark, null, 2), 'engine', 'engine_summary');
       this.saveSessionSnapshot(session);
 
       this.emitEvent(session, 'session_completed', {
@@ -1396,9 +1541,9 @@ console.log('ALL 5 TESTS PASSED SUCCESSFULLY.');
 </body>
 </html>`;
 
-    this.writeWorkspaceFile(session, 'app.js', appJs, '@builder');
-    this.writeWorkspaceFile(session, 'test.js', testJs, '@builder');
-    this.writeWorkspaceFile(session, 'index.html', indexHtml, '@builder');
+    this.writeWorkspaceFile(session, 'app.js', appJs, 'engine', 'engine_fallback');
+    this.writeWorkspaceFile(session, 'test.js', testJs, 'engine', 'engine_fallback');
+    this.writeWorkspaceFile(session, 'index.html', indexHtml, 'engine', 'engine_fallback');
   }
 
   serializeSession(session) {
@@ -1418,6 +1563,9 @@ console.log('ALL 5 TESTS PASSED SUCCESSFULLY.');
       files: Object.values(session.files),
       fileHistory: session.fileHistory || {},
       reworkDiffs: session.reworkDiffs || [],
+      reworkSummary: session.reworkSummary || [],
+      healedBy: (session.reworkSummary || []).map((c) => c.healedBy),
+      modelReplies: session.modelReplies || [],
       verificationRuns: session.verificationRuns,
       parallelTasksRun: session.parallelTasksRun || [],
       reworkCycles: session.reworkCycles || 0,
