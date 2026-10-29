@@ -957,20 +957,33 @@ function applyPass1Fault(artifacts, scenarioId) {
 }
 
 function serializeScenarios() {
-  return SCENARIO_PRESETS.map((preset) => ({
-    id: preset.id,
-    title: preset.title,
-    tagline: preset.tagline,
-    prompt: preset.prompt,
-    projectName: preset.projectName,
-    highlights: preset.highlights,
-    files: AUTHORED_FILES.concat(['benchmark.json']),
-    pass1Fault: {
-      file: preset.pass1Fault.file,
-      summary: preset.pass1Fault.summary,
-    },
-    artifacts: preset.buildArtifacts(),
-  }));
+  return SCENARIO_PRESETS.map((preset) => {
+    const artifacts = preset.buildArtifacts();
+    return {
+      id: preset.id,
+      title: preset.title,
+      tagline: preset.tagline,
+      prompt: preset.prompt,
+      projectName: preset.projectName,
+      highlights: preset.highlights,
+      files: AUTHORED_FILES.concat(['benchmark.json']),
+      protectedFiles: scenarioTestFiles(artifacts),
+      pass1Fault: {
+        file: preset.pass1Fault.file,
+        summary: preset.pass1Fault.summary,
+      },
+      artifacts,
+    };
+  });
+}
+
+function isScenarioTestFile(relPath) {
+  const base = String(relPath || '').replace(/\\/g, '/').replace(/^(\.\/)+/, '').split('/').pop();
+  return base === 'test.js' || /^test.*\.js$/i.test(base) || /\.test\.js$/i.test(base);
+}
+
+function scenarioTestFiles(artifacts) {
+  return Object.keys(artifacts || {}).filter(isScenarioTestFile);
 }
 
 module.exports = {
@@ -981,5 +994,7 @@ module.exports = {
   buildScenarioArtifacts,
   applyPass1Fault,
   applyOnCallAscendingBusiestFault,
+  isScenarioTestFile,
+  scenarioTestFiles,
   serializeScenarios,
 };

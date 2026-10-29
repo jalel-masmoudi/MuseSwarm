@@ -9,6 +9,8 @@ const {
   resolveScenarioId,
   buildScenarioArtifacts,
   applyPass1Fault,
+  isScenarioTestFile,
+  scenarioTestFiles,
   serializeScenarios,
 } = require('./scenarios');
 const { extractJson, extractFilePatch } = require('./reply-parser');
@@ -98,8 +100,22 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function sessionProtectedFiles(session) {
+  if (session?._cleanArtifacts) return scenarioTestFiles(session._cleanArtifacts);
+  if (session?.scenarioId) return ['test.js'];
+  return [];
+}
+
+function isProtectedScenarioFile(session, relPath) {
+  if (!relPath) return false;
+  const protectedSet = new Set(sessionProtectedFiles(session));
+  if (protectedSet.has(relPath)) return true;
+  return Boolean(session?.scenarioId || session?._cleanArtifacts) && isScenarioTestFile(relPath);
+}
+
 // Files named in the failing output (stack frames, syntax checks) plus their local require() deps,
 // so a failure surfacing in test.js also hands @builder the module under test (e.g. domain.js).
+// Scenario grading tests are read-only: walk their requires, then drop them from the writable list.
 function reworkTargetFiles(session, testRun) {
   const jsFiles = Object.keys(session.files).filter((p) => p.endsWith('.js'));
   const output = `${testRun.stderr || ''}\n${testRun.stdout || ''}`;
@@ -122,7 +138,7 @@ function reworkTargetFiles(session, testRun) {
       }
     }
   }
-  return jsFiles.filter((p) => hits.has(p));
+  return jsFiles.filter((p) => hits.has(p) && !isProtectedScenarioFile(session, p));
 }
 
 // ponytail: O(n*m) line LCS. Fine for workspace files under a few thousand lines; switch to Myers if artifacts grow past that.
@@ -483,8 +499,51 @@ class MuseSwarmEngine extends EventEmitter {
   // source: 'model' (parsed from a live Muse Spark reply), 'offline_fixture' (simulated reply),
   // or an engine-authored write: 'scenario_fixture', 'fault_injection', 'deterministic_restore',
   // 'engine_fallback', 'engine_summary'.
+  recordRejectedProtectedWrite(session, relPath, attemptedContent, authorAgent) {
+    const safeRel = relPath.replace(/^(\.\.(\/|\\|$))+/, '').replace(/^\/+/, '');
+    if (!session.fileHistory) session.fileHistory = {};
+    const history = session.fileHistory[safeRel] || (session.fileHistory[safeRel] = []);
+    const text = String(attemptedContent);
+    history.push({
+      revision: history.length + 1,
+      author: authorAgent,
+      source: 'rejected_protected_file',
+      rejected: true,
+      updatedAt: new Date().toISOString(),
+      bytes: Buffer.byteLength(text, 'utf8'),
+      content: text,
+    });
+    this.emitEvent(session, 'file_write_rejected', {
+      path: safeRel,
+      author: authorAgent,
+      source: 'rejected_protected_file',
+    });
+    return history[history.length - 1];
+  }
+
+  enforceScenarioGradingTests(session) {
+    const artifacts = session._cleanArtifacts;
+    if (!artifacts) return;
+    for (const relPath of sessionProtectedFiles(session)) {
+      const fixture = artifacts[relPath];
+      if (typeof fixture !== 'string') continue;
+      const current = session.files[relPath]?.content;
+      if (current !== fixture) {
+        this.writeWorkspaceFile(session, relPath, fixture, 'engine', 'scenario_fixture');
+      } else {
+        const fullPath = path.join(session.workspaceDir, relPath);
+        fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+        fs.writeFileSync(fullPath, fixture, 'utf8');
+      }
+    }
+  }
+
   writeWorkspaceFile(session, relPath, content, authorAgent, source = 'unspecified') {
     const safeRel = relPath.replace(/^(\.\.(\/|\\|$))+/, '').replace(/^\/+/, '');
+    if (isProtectedScenarioFile(session, safeRel) && authorAgent !== 'engine') {
+      this.recordRejectedProtectedWrite(session, safeRel, content, authorAgent);
+      return null;
+    }
     const fullPath = path.join(session.workspaceDir, safeRel);
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
     const text = String(content);
@@ -545,6 +604,7 @@ class MuseSwarmEngine extends EventEmitter {
   }
 
   runWorkspaceTests(session, label = {}) {
+    this.enforceScenarioGradingTests(session);
     const startMs = Date.now();
     const results = {
       run: (session.verificationRuns || []).length + 1,
@@ -627,7 +687,7 @@ class MuseSwarmEngine extends EventEmitter {
 
   evaluateDeterministicRubric(session, testRun) {
     const appCode = session.files['app.js']?.content || '';
-    const testCode = session.files['test.js']?.content || '';
+    const testCode = session._cleanArtifacts?.['test.js'] || session.files['test.js']?.content || '';
     const htmlCode = session.files['index.html']?.content || '';
 
     // 1. Correctness & Sandbox Execution (0-25)
@@ -940,8 +1000,10 @@ Message from @architect:
 Write compact, complete files now. Do not deliberate${tight ? ' (your previous reply ran out of tokens while reasoning and returned no files)' : ''}: put tokens into file contents, not commentary.
 CRITICAL RULES:
 1. \`app.js\` MUST be pure JavaScript with ZERO external npm packages. Export for Node (\`module.exports\`) AND \`globalThis.AppCore\`.
-2. \`test.js\` MUST require \`./app.js\`, use Node \`assert\`, print \`[PASS]\` lines, and exit 0. At least 5 tests.
-3. \`index.html\` MUST be a short dark-mode page that loads \`<script src="app.js"></script>\` (keep it under 80 lines).
+2. \`index.html\` MUST be a short dark-mode page that loads \`<script src="app.js"></script>\` (keep it under 80 lines).
+${session.scenarioId
+    ? `3. Do NOT emit \`test.js\` (or any other test file). Grading tests are engine-owned and read-only; a test.js write is rejected and does not change the score.`
+    : `3. \`test.js\` MUST require \`./app.js\`, use Node \`assert\`, print \`[PASS]\` lines, and exit 0. At least 5 tests.`}
 4. Messages to other bots: one sentence each. No long comments in source.
 
 Return ONLY one strict JSON object (no prose, no markdown fences). Every file's full source goes in a JSON string, with newlines escaped as \\n and double quotes escaped as \\". Schema:
@@ -950,8 +1012,8 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Every file's 
   "messageToVerifier": "One sentence to @verifier.",
   "files": [
     { "path": "app.js", "content": "<full source of app.js>" },
-    { "path": "index.html", "content": "<full source of index.html>" },
-    { "path": "test.js", "content": "<full source of test.js>" }
+    { "path": "index.html", "content": "<full source of index.html>" }${session.scenarioId ? '' : `,
+    { "path": "test.js", "content": "<full source of test.js>" }`}
   ]
 }`;
 
@@ -975,11 +1037,12 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Every file's 
         !Object.keys(builderPatch.files).length && builderRes.finishReason === 'length'
           ? 'finish_reason_length_no_files'
           : null;
+      const builderRejected = Object.keys(builderPatch.files).filter((p) => isProtectedScenarioFile(session, p));
       recordModelReply(session, {
         agent: '@builder',
         phase: 'build',
         res: builderRes,
-        parse: { parsedJson: builderPatch.parsedJson, format: builderPatch.format, files: Object.keys(builderPatch.files), retryReason: builderRetryReason },
+        parse: { parsedJson: builderPatch.parsedJson, format: builderPatch.format, files: Object.keys(builderPatch.files), rejectedProtectedFiles: builderRejected, retryReason: builderRetryReason },
       });
       if (builderRetryReason) {
         builderRes = await callBuilder(true);
@@ -988,7 +1051,7 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Every file's 
           agent: '@builder',
           phase: 'build_retry',
           res: builderRes,
-          parse: { parsedJson: builderPatch.parsedJson, format: builderPatch.format, files: Object.keys(builderPatch.files), retryOf: 'build', retryReason: builderRetryReason },
+          parse: { parsedJson: builderPatch.parsedJson, format: builderPatch.format, files: Object.keys(builderPatch.files), rejectedProtectedFiles: Object.keys(builderPatch.files).filter((p) => isProtectedScenarioFile(session, p)), retryOf: 'build', retryReason: builderRetryReason },
         });
       }
       const builderOut = builderPatch.parsedJson
@@ -996,8 +1059,15 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Every file's 
         : null;
       const builderSource = replySource(builderRes);
       const writtenByBuilder = [];
-      if (Object.keys(builderPatch.files).length) {
-        const fileEntries = Object.entries(builderPatch.files).filter(([, code]) => typeof code === 'string');
+      const fileEntries = Object.entries(builderPatch.files).filter(([relPath, code]) => {
+        if (typeof code !== 'string') return false;
+        if (isProtectedScenarioFile(session, relPath)) {
+          this.recordRejectedProtectedWrite(session, relPath, code, '@builder');
+          return false;
+        }
+        return true;
+      });
+      if (fileEntries.length) {
         await this.runParallelTasks(
           session,
           fileEntries.map(([relPath, code]) => ({
@@ -1007,8 +1077,8 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Every file's 
             code,
           })),
           async (spec) => {
-            this.writeWorkspaceFile(session, spec.relPath, spec.code, '@builder', builderSource);
-            writtenByBuilder.push(spec.relPath);
+            const written = this.writeWorkspaceFile(session, spec.relPath, spec.code, '@builder', builderSource);
+            if (written) writtenByBuilder.push(spec.relPath);
             return { path: spec.relPath, bytes: Buffer.byteLength(spec.code, 'utf8') };
           }
         );
@@ -1092,12 +1162,13 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Every file's 
           comment: `Rework #${reworkAttempt}: Sandbox test failed (${testRun.stderr.slice(0, 220)}). Requesting targeted fix from @builder for ${targets.join(', ')}.`,
         });
 
+        const readOnlyTests = sessionProtectedFiles(session).filter((p) => session.files[p]);
         this.postBotMessage(session, {
           from: '@verifier',
           to: '@builder',
           delivery: 'steer',
-          content: `@builder [Rework Cycle #${reworkAttempt}] Sandbox execution of \`node test.js\` reported an error:\n\`\`\`\n${testRun.stderr.slice(0, 400)}\n\`\`\`\nPlease patch ${targets.map((t) => `\`${t}\``).join(', ')} so all syntax and runtime assertions pass cleanly.`,
-          metadata: { phase: 'rework_request', taskId: 'TASK-1', reworkAttempt, targetFiles: targets },
+          content: `@builder [Rework Cycle #${reworkAttempt}] Sandbox execution of \`node test.js\` reported an error:\n\`\`\`\n${testRun.stderr.slice(0, 400)}\n\`\`\`\nPlease patch ${targets.map((t) => `\`${t}\``).join(', ') || 'the implementation files'}. \`test.js\` is read-only grading and must not be edited.`,
+          metadata: { phase: 'rework_request', taskId: 'TASK-1', reworkAttempt, targetFiles: targets, readOnlyFiles: readOnlyTests },
         });
 
         this.emitEvent(session, 'agent_active', {
@@ -1113,14 +1184,18 @@ ${`${testRun.stdout || ''}\n${testRun.stderr || ''}`.trim()}
 Failed checks:
 ${JSON.stringify(testRun.checks.filter((c) => !c.passed), null, 2)}
 
-Files implicated by the stack trace and their local require() dependencies:
-${targets.map((t) => `--- ${t} ---\n${session.files[t]?.content || ''}`).join('\n\n')}
-
-Find the root cause and patch ONLY these files: ${targets.join(', ')}. The bug may be in a module the test requires (for example domain.js), not in test.js itself.
+Writable files implicated by the stack trace and their local require() dependencies:
+${targets.map((t) => `--- ${t} ---\n${session.files[t]?.content || ''}`).join('\n\n') || '(none)'}
+${readOnlyTests.length ? `
+Read-only engine-owned grading tests (do not patch; a test.js write is rejected and does not change the score):
+${readOnlyTests.map((t) => `--- ${t} (read-only) ---\n${session.files[t]?.content || ''}`).join('\n\n')}
+` : ''}
+Find the root cause and patch ONLY these writable files: ${targets.join(', ') || '(none)'}. The bug is in implementation (for example domain.js), never in the grading tests.
+Do not emit test.js or any other test file in the files array.
 Return ONLY one strict JSON object (no prose, no markdown fences). Each patched file's FULL new source goes in a JSON string with newlines escaped as \\n and double quotes escaped as \\". Omit files you did not change. Schema:
 {
   "messageToVerifier": "Root cause and fix, addressed to @verifier",
-  "files": [ { "path": "${targets[0] || 'app.js'}", "content": "<full patched source>" } ]
+  "files": [ { "path": "${targets[0] || 'domain.js'}", "content": "<full patched source>" } ]
 }`;
 
         const fixRes = await this.client.chatCompletion({
@@ -1137,10 +1212,26 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Each patched 
 
         const patch = extractFilePatch(fixRes.content, Object.keys(session.files));
         const patchSource = replySource(fixRes);
-        const changed = Object.entries(patch.files).filter(([relPath, code]) => session.files[relPath]?.content !== code);
+        const rejectedProtectedFiles = [];
+        const changed = [];
+        for (const [relPath, code] of Object.entries(patch.files)) {
+          if (typeof code !== 'string') continue;
+          if (isProtectedScenarioFile(session, relPath)) {
+            this.recordRejectedProtectedWrite(session, relPath, code, '@builder');
+            rejectedProtectedFiles.push(relPath);
+            continue;
+          }
+          if (session.files[relPath]?.content !== code) changed.push([relPath, code]);
+        }
         const prePatch = Object.fromEntries(changed.map(([relPath]) => [relPath, session.files[relPath]?.content]));
         const runsBefore = session.verificationRuns.length;
-        let modelPatch = changed.length ? 'applied' : Object.keys(patch.files).length ? 'unchanged' : 'missing';
+        let modelPatch = changed.length
+          ? 'applied'
+          : rejectedProtectedFiles.length && !Object.keys(patch.files).some((p) => !rejectedProtectedFiles.includes(p))
+            ? 'rejected_protected_file'
+            : Object.keys(patch.files).length
+              ? 'unchanged'
+              : 'missing';
         let healedBy = null;
 
         const markDiffs = (fromIdx, passed) => {
@@ -1200,14 +1291,15 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Each patched 
           phase: 'rework_fix',
           reworkAttempt,
           res: fixRes,
-          parse: { parsedJson: patch.parsedJson, format: patch.format, files: Object.keys(patch.files), targetFiles: targets },
+          parse: { parsedJson: patch.parsedJson, format: patch.format, files: Object.keys(patch.files), rejectedProtectedFiles, targetFiles: targets, readOnlyFiles: readOnlyTests },
         });
         session.reworkSummary.push({
           reworkAttempt,
           targetFiles: targets,
-          modelReply: { simulated: reply.simulated, finishReason: reply.finishReason, parsedJson: patch.parsedJson, format: patch.format, files: Object.keys(patch.files) },
+          modelReply: { simulated: reply.simulated, finishReason: reply.finishReason, parsedJson: patch.parsedJson, format: patch.format, files: Object.keys(patch.files), rejectedProtectedFiles },
           modelPatch,
           filesPatchedByModel: changed.map(([relPath]) => relPath),
+          rejectedProtectedFiles,
           healedBy,
           verificationRuns: session.verificationRuns.slice(runsBefore).map((r) => ({ run: r.run, phase: r.phase, passed: r.passed })),
         });
@@ -1607,7 +1699,9 @@ console.log('ALL 5 TESTS PASSED SUCCESSFULLY.');
 </html>`;
 
     this.writeWorkspaceFile(session, 'app.js', appJs, 'engine', 'engine_fallback');
-    this.writeWorkspaceFile(session, 'test.js', testJs, 'engine', 'engine_fallback');
+    if (!isProtectedScenarioFile(session, 'test.js')) {
+      this.writeWorkspaceFile(session, 'test.js', testJs, 'engine', 'engine_fallback');
+    }
     this.writeWorkspaceFile(session, 'index.html', indexHtml, 'engine', 'engine_fallback');
   }
 
@@ -1636,6 +1730,7 @@ console.log('ALL 5 TESTS PASSED SUCCESSFULLY.');
       reworkCycles: session.reworkCycles || 0,
       rubricEvaluation: session.rubricEvaluation || null,
       benchmark: session.benchmark || null,
+      protectedFiles: sessionProtectedFiles(session),
       ObserverAdvisories: session.ObserverAdvisories,
       telemetry: session.telemetry || (session._telSnap ? this.client.telemetrySince(session._telSnap) : this.client.getTelemetry()),
     };
