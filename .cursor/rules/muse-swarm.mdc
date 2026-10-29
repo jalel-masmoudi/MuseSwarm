@@ -9,7 +9,7 @@ alwaysApply: true
 This repository powers **MuseSwarm**, built for the **Meta Global AI Developer Hackathon** (Indie Developer Track, Theme 2: Push the Frontier).
 
 ## Model & Inference Stack
-- **Model:** `meta-models/muse-spark-open-1026` (Meta's 816B MoE / 42B active parameter `Muse Spark Open` model)
+- **Model:** `meta-models/muse-spark-open-1026` (Meta's `Muse Spark Open` model)
 - **Inference Provider:** Baseten OpenAI-compatible API (`https://inference.baseten.co/v1`, up to 2M TPM)
 - **Credentials:** Loaded strictly from `.env` (`BASETEN_API_KEY`); never hardcode keys in source files.
 

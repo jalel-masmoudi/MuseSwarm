@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MuseSwarm MCP Server for Cursor IDE & Muse Code CLI
+ * MuseSwarm MCP Server for Cursor IDE
  * Exposes stdio JSON-RPC 2.0 MCP tools so Cursor can directly orchestrate
  * @architect, @builder, @verifier, and @lead on Baseten Muse Spark Open.
  */
