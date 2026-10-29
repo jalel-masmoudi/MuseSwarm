@@ -1,5 +1,4 @@
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { execSync } = require('child_process');
 const EventEmitter = require('events');
@@ -16,6 +15,7 @@ const {
   serializeScenarios,
 } = require('./scenarios');
 const { extractJson, extractFilePatch } = require('./reply-parser');
+const { scenarioAppLoadsDomain, scanModelFaultSource, runIsolatedDomainGrade } = require('./isolated-grade');
 
 const AGENT_PROFILES = {
   architect: {
@@ -126,6 +126,29 @@ function isScenarioReworkNonTarget(session, relPath) {
   if (isProtectedScenarioFile(session, relPath)) return false;
   const faultFiles = scenarioFaultFiles(session);
   return faultFiles.length > 0 && !faultFiles.includes(relPath);
+}
+
+function scenarioAllowedLocals(session) {
+  const arts = session?._cleanArtifacts || {};
+  return Object.keys(arts).filter((p) => p.endsWith('.js') && !isScenarioTestFile(p));
+}
+
+function isHostileScenarioAppJs(content) {
+  const text = String(content || '');
+  if (!scenarioAppLoadsDomain(text)) return true;
+  return scanModelFaultSource(text, ['domain.js']).includes('assert')
+    || /\brequire\s*\(\s*['"](?:node:)?assert['"]\s*\)/.test(text)
+    || /\brequire\.cache\b/.test(text);
+}
+
+function isKeptModelScenarioFile(session, relPath) {
+  const file = session?.files?.[relPath];
+  if (!file || (file.source !== 'model' && file.source !== 'offline_fixture')) return false;
+  if (isScenarioTestFile(relPath)) return false;
+  if (scenarioFaultFiles(session).includes(relPath)) return false;
+  if (relPath === 'app.js') return !isHostileScenarioAppJs(file.content);
+  if (relPath === 'index.html') return true;
+  return false;
 }
 
 // Files named in the failing output (stack frames, syntax checks) plus their local require() deps,
@@ -543,36 +566,29 @@ class MuseSwarmEngine extends EventEmitter {
     return this.recordRejectedWrite(session, relPath, attemptedContent, authorAgent, 'rejected_protected_file');
   }
 
-  // Fixture tests + fixture copies of every non-fault file, plus the current/model fault file(s).
-  // A shim in app.js cannot pass this check; only a real domain.js fix can.
+  // Isolated child-process grade: model's domain.js never shares a process with assert.
+  // Parent compares JSON outputs to the clean fixture domain.js (also run in its own child).
   runIndependentScenarioGrade(session, overlay = {}) {
     const artifacts = session._cleanArtifacts;
     if (!artifacts || !session.scenarioId) return { passed: true, skipped: true };
-    const faultFiles = new Set(scenarioFaultFiles(session));
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'museswarm-grade-'));
-    try {
-      for (const [relPath, fixture] of Object.entries(artifacts)) {
-        let content = fixture;
-        if (faultFiles.has(relPath) && !isScenarioTestFile(relPath)) {
-          if (Object.prototype.hasOwnProperty.call(overlay, relPath)) content = overlay[relPath];
-          else if (session.files[relPath]?.content != null) content = session.files[relPath].content;
-        }
-        if (isScenarioTestFile(relPath)) content = fixture;
-        const dest = path.join(tmp, relPath);
-        fs.mkdirSync(path.dirname(dest), { recursive: true });
-        fs.writeFileSync(dest, content, 'utf8');
-      }
-      const out = execSync('node test.js', { cwd: tmp, stdio: 'pipe', timeout: 12000 });
-      return { passed: true, stdout: String(out || ''), stderr: '' };
-    } catch (err) {
-      return {
-        passed: false,
-        stdout: String(err.stdout || ''),
-        stderr: String(err.stderr || err.message || ''),
-      };
-    } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
-    }
+    const faultFile = scenarioFaultFiles(session)[0] || 'domain.js';
+    let modelDomain = artifacts[faultFile];
+    if (Object.prototype.hasOwnProperty.call(overlay, faultFile)) modelDomain = overlay[faultFile];
+    else if (session.files[faultFile]?.content != null) modelDomain = session.files[faultFile].content;
+    const grade = runIsolatedDomainGrade(
+      session.scenarioId,
+      modelDomain,
+      artifacts[faultFile],
+      scenarioAllowedLocals(session)
+    );
+    return {
+      passed: Boolean(grade.passed),
+      skipped: false,
+      stdout: '',
+      stderr: grade.passed ? '' : `${grade.reason || 'independent grade failed'}${grade.detail ? ': ' + grade.detail : ''}`,
+      scan: grade.scan || [],
+      reason: grade.reason,
+    };
   }
 
   applyIndependentGrade(testRun, grade) {
@@ -582,8 +598,8 @@ class MuseSwarmEngine extends EventEmitter {
       detail: grade.skipped
         ? 'skipped'
         : grade.passed
-          ? 'fixture tests passed against fixture app.js plus model fault-file(s)'
-          : (grade.stderr || grade.stdout || 'independent grade failed').trim().slice(0, 400),
+          ? 'isolated child-process domain.js outputs matched the fixture'
+          : (grade.stderr || grade.reason || 'independent grade failed').trim().slice(0, 400),
     });
     if (!grade.passed) {
       testRun.passed = false;
@@ -592,6 +608,19 @@ class MuseSwarmEngine extends EventEmitter {
     testRun.passedCount = testRun.checks.filter((c) => c.passed).length;
     testRun.failedCount = testRun.checks.filter((c) => !c.passed).length;
     return testRun.passed;
+  }
+
+  restoreScenarioCodeFixtures(session, source = 'deterministic_restore', { force = false } = {}) {
+    const artifacts = session._cleanArtifacts;
+    if (!artifacts) return;
+    for (const relPath of ['domain.js', 'app.js', 'test.js', 'index.html']) {
+      const fixture = artifacts[relPath];
+      if (typeof fixture !== 'string') continue;
+      if (!force && isKeptModelScenarioFile(session, relPath)) continue;
+      if (session.files[relPath]?.content !== fixture) {
+        this.writeWorkspaceFile(session, relPath, fixture, 'engine', source);
+      }
+    }
   }
 
   enforceScenarioGradingTests(session) {
@@ -1138,6 +1167,10 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Every file's 
           this.recordRejectedProtectedWrite(session, relPath, code, '@builder');
           return false;
         }
+        if (session.scenarioId && relPath === 'app.js' && isHostileScenarioAppJs(code)) {
+          this.recordRejectedWrite(session, relPath, code, '@builder', 'rejected_contract');
+          return false;
+        }
         return true;
       });
       if (fileEntries.length) {
@@ -1252,39 +1285,50 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Every file's 
           phase: `Rework Loop Fix #${reworkAttempt} (TASK-1)`,
         });
 
-        const fixPrompt = `The sandbox test runner reported an error in your code for "${session.prompt}" (Rework Attempt #${reworkAttempt}).
+        const failOutFull = `${testRun.stdout || ''}\n${testRun.stderr || ''}`.trim();
+        const writableBlock = targets.map((t) => `--- ${t} ---\n${session.files[t]?.content || ''}`).join('\n\n') || '(none)';
+        const fixPromptFor = (tight) => `The sandbox test runner reported an error for "${session.prompt}" (Rework Attempt #${reworkAttempt})${tight ? ' (your previous reply ran out of tokens while reasoning and returned no content)' : ''}.
 
-Failing test output (stdout + stderr):
-${`${testRun.stdout || ''}\n${testRun.stderr || ''}`.trim()}
+Failing test output:
+${failOutFull.slice(0, tight ? 600 : 1200)}
 
-Failed checks:
-${JSON.stringify(testRun.checks.filter((c) => !c.passed), null, 2)}
-
-Writable files implicated by the stack trace and their local require() dependencies:
-${targets.map((t) => `--- ${t} ---\n${session.files[t]?.content || ''}`).join('\n\n') || '(none)'}
-${readOnlyTests.length ? `
-Read-only engine-owned grading tests (do not patch; a test.js write is rejected and does not change the score):
-${readOnlyTests.map((t) => `--- ${t} (read-only) ---\n${session.files[t]?.content || ''}`).join('\n\n')}
+Writable file (patch ONLY this):
+${writableBlock}
+${readOnlyTests.length ? `--- test.js (read-only) ---
+test.js is engine-owned grading and must not be edited.
 ` : ''}
-Find the root cause and patch ONLY these writable files: ${targets.join(', ') || '(none)'}. The bug is in implementation (for example domain.js), never in the grading tests.
-Do not emit test.js or any other test file in the files array.
-Return ONLY one strict JSON object (no prose, no markdown fences). Each patched file's FULL new source goes in a JSON string with newlines escaped as \\n and double quotes escaped as \\". Omit files you did not change. Schema:
+Patch ONLY ${targets.join(', ') || 'domain.js'}. Do not emit test.js or app.js.
+Return ONLY one strict JSON object (no prose, no markdown fences). Schema:
 {
   "messageToVerifier": "Root cause and fix, addressed to @verifier",
   "files": [ { "path": "${targets[0] || 'domain.js'}", "content": "<full patched source>" } ]
 }`;
+        const callFix = (tight) =>
+          this.client.chatCompletion({
+            agentId: 'builder',
+            maxTokens: 32000,
+            timeoutMs: CONFIG.longRequestTimeoutMs,
+            temperature: 0.1,
+            reasoningEffort: 'low',
+            onProgress,
+            messages: [
+              { role: 'system', content: loadSoul('builder') },
+              { role: 'user', content: fixPromptFor(tight) },
+            ],
+          });
 
-        const fixRes = await this.client.chatCompletion({
-          agentId: 'builder',
-          maxTokens: 16000,
-          timeoutMs: CONFIG.longRequestTimeoutMs,
-          temperature: 0.1,
-          onProgress,
-          messages: [
-            { role: 'system', content: loadSoul('builder') },
-            { role: 'user', content: fixPrompt },
-          ],
-        });
+        let fixRes = await callFix(false);
+        const fixRetryReason = isEmptyLengthReply(fixRes) ? 'finish_reason_length_empty_content' : null;
+        if (fixRetryReason) {
+          recordModelReply(session, {
+            agent: '@builder',
+            phase: 'rework_fix',
+            reworkAttempt,
+            res: fixRes,
+            parse: { retryReason: fixRetryReason, targetFiles: targets },
+          });
+          fixRes = await callFix(true);
+        }
 
         const patch = extractFilePatch(fixRes.content, Object.keys(session.files));
         const patchSource = replySource(fixRes);
@@ -1304,19 +1348,29 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Each patched 
             rejectedNonTargets.push(relPath);
             continue;
           }
+          if (scenarioFaultFiles(session).includes(relPath) && patchSource === 'model') {
+            const scan = scanModelFaultSource(code, scenarioAllowedLocals(session));
+            if (scan.length) {
+              this.recordRejectedWrite(session, relPath, code, '@builder', 'rejected_grading_check');
+              rejectedGradingCheckFiles.push(relPath);
+              continue;
+            }
+          }
           if (session.files[relPath]?.content !== code) changed.push([relPath, code]);
         }
         const prePatch = Object.fromEntries(changed.map(([relPath]) => [relPath, session.files[relPath]?.content]));
         const runsBefore = session.verificationRuns.length;
         let modelPatch = changed.length
           ? 'applied'
-          : rejectedProtectedFiles.length && !Object.keys(patch.files).some((p) => !rejectedProtectedFiles.includes(p) && !rejectedNonTargets.includes(p))
+          : rejectedProtectedFiles.length && !Object.keys(patch.files).some((p) => !rejectedProtectedFiles.includes(p) && !rejectedNonTargets.includes(p) && !rejectedGradingCheckFiles.includes(p))
             ? 'rejected_protected_file'
-            : rejectedNonTargets.length && !changed.length
-              ? 'rejected_non_target'
-              : Object.keys(patch.files).length
-                ? 'unchanged'
-                : 'missing';
+            : rejectedGradingCheckFiles.length && !changed.length
+              ? 'rejected_grading_check'
+              : rejectedNonTargets.length && !changed.length
+                ? 'rejected_non_target'
+                : Object.keys(patch.files).length
+                  ? 'unchanged'
+                  : 'missing';
         let healedBy = null;
 
         const markDiffs = (fromIdx, passed) => {
@@ -1367,9 +1421,13 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Each patched 
               this.writeWorkspaceFile(session, relPath, code, 'engine', 'deterministic_restore');
             }
           }
-          for (const [relPath, code] of Object.entries(savedCleanFiles)) {
-            if (session.files[relPath]?.content !== code) {
-              this.writeWorkspaceFile(session, relPath, code, 'engine', 'deterministic_restore');
+          if (session._cleanArtifacts) {
+            this.restoreScenarioCodeFixtures(session, 'deterministic_restore');
+          } else {
+            for (const [relPath, code] of Object.entries(savedCleanFiles)) {
+              if (session.files[relPath]?.content !== code) {
+                this.writeWorkspaceFile(session, relPath, code, 'engine', 'deterministic_restore');
+              }
             }
           }
           testRun = this.runWorkspaceTests(session, {
@@ -1394,7 +1452,7 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Each patched 
 
         const reply = recordModelReply(session, {
           agent: '@builder',
-          phase: 'rework_fix',
+          phase: fixRetryReason ? 'rework_fix_retry' : 'rework_fix',
           reworkAttempt,
           res: fixRes,
           parse: {
@@ -1407,6 +1465,8 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Each patched 
             modelPatch,
             targetFiles: targets,
             readOnlyFiles: readOnlyTests,
+            retryOf: fixRetryReason ? 'rework_fix' : undefined,
+            retryReason: fixRetryReason || undefined,
           },
         });
         session.reworkSummary.push({
@@ -1494,16 +1554,29 @@ Return ONLY a valid JSON object inside a \`\`\`json code block:
         parse: { parsedJson: Boolean(verifierParsed), keys: verifierParsed ? Object.keys(verifierParsed) : [] },
       });
       const verifierOut = verifierParsed || {
-        verdict: 'VERIFIED_PASS',
+        verdict: testRun.passed ? 'VERIFIED_PASS' : 'VERIFIED_FAIL',
         qualityScore: rubricEval.totalScore,
         rubric: rubricEval.breakdown,
-        messageToBuilder: `@builder Code audit complete. Syntax checks and runtime assertions in test.js passed cleanly (${testRun.checks.length} checks green, rubric ${rubricEval.totalScore}/100).`,
-        messageToLead: `@lead Verification passed (VERIFIED_PASS). Handing off TASK-3 for release documentation and synthesis.`,
+        messageToBuilder: `@builder Code audit complete. Syntax checks and runtime assertions in test.js ${testRun.passed ? 'passed' : 'failed'} (${testRun.checks.length} checks, rubric ${rubricEval.totalScore}/100).`,
+        messageToLead: `@lead Verification ${testRun.passed ? 'passed (VERIFIED_PASS)' : 'failed (VERIFIED_FAIL)'}. Handing off TASK-3 for release documentation and synthesis.`,
       };
 
+      if (session.scenarioId && session._cleanArtifacts && testRun.passed) {
+        if (!(testRun.checks || []).some((c) => c.name === 'independent_grade')) {
+          this.applyIndependentGrade(testRun, this.runIndependentScenarioGrade(session));
+        }
+      }
+      const anyRunPassed = (session.verificationRuns || []).some((r) => r.passed);
+      const independentOk =
+        !session.scenarioId ||
+        (testRun.checks || []).some((c) => c.name === 'independent_grade' && c.passed);
+      const honestPass = Boolean(testRun.passed && anyRunPassed && independentOk);
+
       session.rubricEvaluation = {
-        verdict: verifierOut.verdict || 'VERIFIED_PASS',
-        qualityScore: verifierOut.qualityScore || rubricEval.totalScore,
+        verdict: honestPass ? (verifierOut.verdict === 'VERIFIED_FAIL' ? 'VERIFIED_FAIL' : 'VERIFIED_PASS') : 'VERIFIED_FAIL',
+        qualityScore: Number.isFinite(Number(verifierOut.qualityScore)) && honestPass
+          ? Number(verifierOut.qualityScore)
+          : rubricEval.totalScore,
         rubric: verifierOut.rubric || rubricEval.breakdown,
         invariants: rubricEval.invariants,
       };
@@ -1655,6 +1728,10 @@ Return ONLY one strict JSON object (no prose, no markdown fences) with newlines 
   }
 
   writeFallbackArtifacts(session) {
+    if (session._cleanArtifacts) {
+      this.restoreScenarioCodeFixtures(session, 'engine_fallback', { force: true });
+      return;
+    }
     const appJs = `// Generated by MuseSwarm (@builder) — Isomorphic Core Engine
 class TaskPriorityEngine {
   constructor() {
