@@ -5,9 +5,195 @@ const path = require('path');
 const { CONFIG } = require('./config');
 
 const GOLDEN_PREFIX = 'golden-';
+const COMMITTED_REFERENCE_WORKSPACES = Object.freeze(['sprint-priority-engine-8z24']);
+const MID_RUN_STATUSES = new Set(['initialized', 'running', 'in_progress']);
 
 function isGoldenWorkspaceDir(dirName) {
   return String(dirName || '').startsWith(GOLDEN_PREFIX);
+}
+
+function isProtectedWorkspaceDir(dirName) {
+  const name = String(dirName || '');
+  if (!name || name === '.' || name === '..') return true;
+  if (name === 'golden' || isGoldenWorkspaceDir(name)) return true;
+  return COMMITTED_REFERENCE_WORKSPACES.includes(name);
+}
+
+function isMidRunSession(session) {
+  if (!session) return false;
+  return MID_RUN_STATUSES.has(String(session.status || ''));
+}
+
+function resolveInsideWorkspaces(dir, rootDir = CONFIG.workspacesDir) {
+  const root = path.resolve(rootDir);
+  const target = path.resolve(dir);
+  const rel = path.relative(root, target);
+  if (!rel || rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  if (rel.split(path.sep).some((part) => part === '..')) return null;
+  // Direct children of workspaces/ only — never recurse or escape.
+  if (rel.split(path.sep).length !== 1) return null;
+  return target;
+}
+
+function safeRemoveWorkspaceDir(dir, rootDir = CONFIG.workspacesDir) {
+  const target = resolveInsideWorkspaces(dir, rootDir);
+  if (!target) return false;
+  if (isProtectedWorkspaceDir(path.basename(target))) return false;
+  let rootReal;
+  let targetReal;
+  try {
+    rootReal = fs.realpathSync(rootDir);
+    targetReal = fs.existsSync(target) ? fs.realpathSync(target) : target;
+  } catch (_) {
+    return false;
+  }
+  const rel = path.relative(rootReal, targetReal);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || rel.split(path.sep).length !== 1) return false;
+  if (isProtectedWorkspaceDir(path.basename(targetReal))) return false;
+  try {
+    fs.rmSync(targetReal, { recursive: true, force: true });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function sessionForWorkspaceDir(engine, absDir) {
+  if (!engine || !engine.sessions) return null;
+  const resolved = path.resolve(absDir);
+  for (const session of engine.sessions.values()) {
+    if (!session.workspaceDir) continue;
+    if (path.resolve(session.workspaceDir) === resolved) return session;
+  }
+  return null;
+}
+
+function workspaceAgeMs(absDir, session, now) {
+  if (session && session.createdAt) {
+    const t = Date.parse(session.createdAt);
+    if (Number.isFinite(t)) return Math.max(0, now - t);
+  }
+  try {
+    const st = fs.statSync(absDir);
+    const stamp = Number(st.mtimeMs || st.ctimeMs || 0);
+    return Number.isFinite(stamp) ? Math.max(0, now - stamp) : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
+function listEphemeralWorkspaceDirs(rootDir = CONFIG.workspacesDir, engine = null) {
+  if (!fs.existsSync(rootDir)) return [];
+  const now = Date.now();
+  const entries = [];
+  for (const entry of fs.readdirSync(rootDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (isProtectedWorkspaceDir(entry.name)) continue;
+    const absDir = path.join(rootDir, entry.name);
+    if (!resolveInsideWorkspaces(absDir, rootDir)) continue;
+    const session = sessionForWorkspaceDir(engine, absDir);
+    if (session && (isGoldenSession(session) || session.readOnly || session.golden)) continue;
+    entries.push({
+      name: entry.name,
+      dir: absDir,
+      session,
+      midRun: isMidRunSession(session),
+      ageMs: workspaceAgeMs(absDir, session, now),
+    });
+  }
+  return entries;
+}
+
+function prunePublicDemoWorkspaces(engine, options = {}) {
+  const rootDir = options.rootDir || CONFIG.workspacesDir;
+  const maxWorkspaces = Number(options.maxWorkspaces) > 0 ? Number(options.maxWorkspaces) : CONFIG.publicDemoMaxWorkspaces;
+  const ttlMs = Number.isFinite(Number(options.ttlMs)) ? Number(options.ttlMs) : CONFIG.publicDemoWorkspaceTtlMs;
+  const reserve = Math.max(0, Number(options.reserve) || 0);
+  const now = Number(options.now) > 0 ? Number(options.now) : Date.now();
+  const pruned = [];
+
+  const ephemeral = listEphemeralWorkspaceDirs(rootDir, engine).map((row) => ({
+    ...row,
+    ageMs: workspaceAgeMs(row.dir, row.session, now),
+  }));
+
+  const tryPrune = (row, reason) => {
+    if (row.midRun) return false;
+    if (row.session && isMidRunSession(row.session)) return false;
+    if (!safeRemoveWorkspaceDir(row.dir, rootDir)) return false;
+    if (row.session && engine && engine.sessions) {
+      engine.sessions.delete(row.session.id);
+      if (engine.activeSessionId === row.session.id) {
+        const next = Array.from(engine.sessions.values()).find((s) => isGoldenSession(s)) || Array.from(engine.sessions.values())[0];
+        engine.activeSessionId = next ? next.id : null;
+      }
+    }
+    pruned.push({ dir: row.dir, name: row.name, sessionId: row.session ? row.session.id : null, reason });
+    row.removed = true;
+    return true;
+  };
+
+  if (ttlMs > 0) {
+    for (const row of ephemeral) {
+      if (row.ageMs >= ttlMs) tryPrune(row, 'ttl');
+    }
+  }
+
+  const remaining = ephemeral.filter((row) => !row.removed);
+  const target = Math.max(0, maxWorkspaces - reserve);
+  const over = remaining.length - target;
+  if (over > 0) {
+    const pruneable = remaining
+      .filter((row) => !row.midRun)
+      .sort((a, b) => a.ageMs - b.ageMs || String(a.name).localeCompare(b.name))
+      .reverse(); // oldest first (largest ageMs)
+    let need = over;
+    for (const row of pruneable) {
+      if (need <= 0) break;
+      if (tryPrune(row, 'cap')) need -= 1;
+    }
+  }
+
+  return {
+    pruned,
+    remaining: listEphemeralWorkspaceDirs(rootDir, engine).length,
+  };
+}
+
+function createDemoWorkspaceGc(engine, options = {}) {
+  let prunedCount = 0;
+  let timer = null;
+  const sweep = (sweepOptions = {}) => {
+    const result = prunePublicDemoWorkspaces(engine, {
+      rootDir: options.rootDir,
+      maxWorkspaces: options.maxWorkspaces,
+      ttlMs: options.ttlMs,
+      reserve: sweepOptions.reserve,
+      now: sweepOptions.now,
+    });
+    prunedCount += result.pruned.length;
+    return result;
+  };
+  return {
+    sweep,
+    get pruned() {
+      return prunedCount;
+    },
+    startPeriodic(ms) {
+      const every = Number(ms) > 0 ? Number(ms) : (options.sweepMs || CONFIG.publicDemoSweepMs);
+      if (timer) clearInterval(timer);
+      timer = setInterval(() => {
+        try {
+          sweep({ reserve: 0 });
+        } catch (_) {}
+      }, every);
+      if (timer && typeof timer.unref === 'function') timer.unref();
+    },
+    stop() {
+      if (timer) clearInterval(timer);
+      timer = null;
+    },
+  };
 }
 
 function listGoldenWorkspaceDirs(rootDir = CONFIG.workspacesDir) {
@@ -233,8 +419,15 @@ async function replayEventsToSse(res, events, { minMs = CONFIG.sseReplayMinMs, m
 
 module.exports = {
   GOLDEN_PREFIX,
+  COMMITTED_REFERENCE_WORKSPACES,
   isGoldenWorkspaceDir,
+  isProtectedWorkspaceDir,
+  isMidRunSession,
   listGoldenWorkspaceDirs,
+  listEphemeralWorkspaceDirs,
+  safeRemoveWorkspaceDir,
+  prunePublicDemoWorkspaces,
+  createDemoWorkspaceGc,
   createRateLimiter,
   createConcurrencyGate,
   clientKey,
