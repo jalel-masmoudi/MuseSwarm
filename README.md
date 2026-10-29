@@ -75,7 +75,9 @@ A rework run (`simulateBrokenFirstPass`, or `POST /api/swarm/rework`) injects on
 
 ## Hosted demo
 
-**Live Studio:** [https://museswarm.onrender.com](https://museswarm.onrender.com)
+**Live Studio:** [https://museswarm.onrender.com](https://museswarm.onrender.com)  
+**Demo video** (unlisted YouTube, 1:23): [https://youtu.be/Iom-c3aXK4s](https://youtu.be/Iom-c3aXK4s)  
+**Source code:** [https://github.com/jalel-masmoudi/MuseSwarm](https://github.com/jalel-masmoudi/MuseSwarm)
 
 Render free plan (Frankfurt, Docker, `MUSE_SWARM_PUBLIC_DEMO=1`, auto-deploys from `main`). It replays the three golden live sessions and **never calls Baseten**. After idle the free-tier instance may cold-start in about **30–60 seconds**. `GET /api/health` reports `mode: public-demo`.
 
