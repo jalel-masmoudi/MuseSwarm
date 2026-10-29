@@ -961,13 +961,15 @@ async function testLeadRetryBuilderBudgetAndSessionTelemetry() {
     assert.ok(modelSession.files['app.js'].content.includes('model-built app.js'));
     assert.strictEqual(modelSession.files['app.js'].source, 'model');
     assert.strictEqual(modelSession.files['app.js'].author, '@builder');
-    assert.strictEqual(modelSession.files['test.js'].source, 'model');
+    assert.strictEqual(modelSession.files['test.js'].source, 'scenario_fixture');
+    assert.ok(modelSession.fileHistory['test.js'].some((h) => h.source === 'rejected_protected_file'));
+    assert.ok(!modelSession.fileHistory['test.js'].some((h) => h.source === 'model'));
     assert.ok(modelSession.fileHistory['domain.js'].some((h) => h.source === 'scenario_fixture'));
     assert.ok(modelSession.fileHistory['domain.js'].some((h) => h.source === 'fault_injection'));
     assert.ok(modelSession.fileHistory['domain.js'].some((h) => h.source === 'deterministic_restore'));
     assert.deepStrictEqual(JSON.parse(modelSession.files['benchmark.json'].content).healedBy, ['deterministic_restore']);
     assert.ok(modelSession.verificationRuns[modelSession.verificationRuns.length - 1].passed);
-    console.log('[PASS] 9.4: a parsed @builder build writes model files; domain.js fixture + rework heal still work');
+    console.log('[PASS] 9.4: a parsed @builder build writes model app.js; test.js stays engine fixture; rework heal still works');
   } finally {
     fs.rmSync(modelSession.workspaceDir, { recursive: true, force: true });
   }
@@ -1009,6 +1011,111 @@ async function testLeadRetryBuilderBudgetAndSessionTelemetry() {
   }
 }
 
+async function testProtectedScenarioTests() {
+  console.log('\n--- [Suite 10] Scenario test.js is engine-owned grading ---');
+  const artifacts = buildScenarioArtifacts('sprint-priority-engine');
+  const weakTest = 'console.log("[PASS] stub");\n';
+
+  const engineA = new MuseSwarmEngine({ offline: true, allowOfflineFallback: true });
+  const origA = engineA.client.chatCompletion.bind(engineA.client);
+  engineA.client.chatCompletion = async (opts) => {
+    const user = opts.messages[opts.messages.length - 1].content;
+    if (opts.agentId === 'builder' && !user.includes('Rework Attempt')) {
+      return {
+        id: 'weak-build-tests',
+        simulated: false,
+        content: JSON.stringify({
+          files: [
+            { path: 'app.js', content: artifacts['app.js'] },
+            { path: 'index.html', content: artifacts['index.html'] },
+            { path: 'test.js', content: weakTest },
+          ],
+        }),
+        finishReason: 'stop',
+        usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20, reasoningTokens: 0 },
+        latencyMs: 20,
+      };
+    }
+    return origA(opts);
+  };
+  const sessionA = engineA.createSession({
+    prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+    scenarioId: 'sprint-priority-engine',
+    projectName: 'case-a-weak-tests',
+    simulateBrokenFirstPass: true,
+  });
+  try {
+    await engineA.executeSwarm(sessionA);
+    assert.strictEqual(sessionA.verificationRuns[0].phase, 'pass1_initial');
+    assert.strictEqual(sessionA.verificationRuns[0].passed, false, 'case A: fixture tests must fail Pass 1 despite a weak model test.js');
+    assert.ok(sessionA.reworkCycles >= 1, 'case A must enter rework');
+    assert.strictEqual(sessionA.files['test.js'].content, artifacts['test.js']);
+    assert.notStrictEqual(sessionA.files['test.js'].source, 'model');
+    assert.ok(sessionA.fileHistory['test.js'].some((h) => h.source === 'rejected_protected_file' && h.content === weakTest));
+    assert.ok(!sessionA.fileHistory['test.js'].some((h) => h.source === 'model'));
+    assert.ok(sessionA.fileHistory['domain.js'].some((h) => h.source === 'fault_injection'));
+    const healedA = (sessionA.reworkSummary || []).map((c) => c.healedBy);
+    assert.ok(!healedA.includes('model'), 'case A must not credit a model heal from weak tests');
+    if (sessionA.rubricEvaluation?.verdict === 'VERIFIED_PASS') {
+      assert.ok(!sessionA.files['domain.js'].content.includes('pass-1 fault'));
+      assert.ok(healedA.includes('deterministic_restore'));
+    }
+    console.log('[PASS] 10.1: case A weak test.js at build cannot skip rework or hide the SLA bug');
+  } finally {
+    fs.rmSync(sessionA.workspaceDir, { recursive: true, force: true });
+  }
+
+  const engineB = new MuseSwarmEngine({ offline: true, allowOfflineFallback: true });
+  const origB = engineB.client.chatCompletion.bind(engineB.client);
+  const reworkPrompts = [];
+  engineB.client.chatCompletion = async (opts) => {
+    const user = opts.messages[opts.messages.length - 1].content;
+    if (opts.agentId === 'builder' && user.includes('Rework Attempt')) {
+      reworkPrompts.push(user);
+      return {
+        id: 'weak-rework-tests',
+        simulated: false,
+        content: JSON.stringify({
+          messageToVerifier: '@verifier tests now pass',
+          files: [{ path: 'test.js', content: weakTest }],
+        }),
+        finishReason: 'stop',
+        usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20, reasoningTokens: 0 },
+        latencyMs: 20,
+      };
+    }
+    return origB(opts);
+  };
+  const sessionB = engineB.createSession({
+    prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+    scenarioId: 'sprint-priority-engine',
+    projectName: 'case-b-testjs-only',
+    simulateBrokenFirstPass: true,
+  });
+  try {
+    await engineB.executeSwarm(sessionB);
+    assert.ok(reworkPrompts.length >= 1);
+    assert.ok(reworkPrompts[0].includes('read-only'), 'rework prompt must mark test.js read-only');
+    assert.ok(reworkPrompts[0].includes('--- test.js (read-only) ---'));
+    assert.ok(!/patch ONLY these writable files:\s*test\.js/.test(reworkPrompts[0]));
+    assert.ok(!sessionB.reworkSummary.some((c) => (c.filesPatchedByModel || []).includes('test.js')));
+    const healedB = (sessionB.reworkSummary || []).map((c) => c.healedBy);
+    assert.ok(!healedB.includes('model'), 'test.js-only patch must not report healedBy model');
+    assert.ok(sessionB.fileHistory['test.js'].some((h) => h.source === 'rejected_protected_file' && h.content === weakTest));
+    assert.strictEqual(sessionB.files['test.js'].content, artifacts['test.js']);
+    assert.notStrictEqual(sessionB.files['test.js'].source, 'model');
+    const benchB = JSON.parse(sessionB.files['benchmark.json'].content);
+    assert.ok(!(benchB.healedBy || []).includes('model'));
+    if (sessionB.rubricEvaluation?.verdict === 'VERIFIED_PASS') {
+      assert.ok(!sessionB.files['domain.js'].content.includes('pass-1 fault'), 'verified only after a real domain.js fix');
+      assert.ok(healedB.includes('deterministic_restore'));
+    }
+    console.log('[PASS] 10.2: case B test.js-only rework patch is rejected and cannot heal as model');
+  } finally {
+    fs.rmSync(sessionB.workspaceDir, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   console.log('=== MuseSwarm Engineering Test & Verification Suite ===');
   await testBasetenClientTelemetryAndRetry();
@@ -1021,6 +1128,7 @@ async function main() {
   await testReworkAttribution();
   testOnCallFairnessDirection();
   await testLeadRetryBuilderBudgetAndSessionTelemetry();
+  await testProtectedScenarioTests();
   console.log('\n✔ ALL UNIT, API & E2E ASSERTIONS PASSED!');
 }
 
