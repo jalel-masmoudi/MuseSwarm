@@ -5,6 +5,8 @@ const { BasetenMuseClient, computePercentile } = require('./baseten-client');
 const { MuseSwarmEngine, AGENT_PROFILES, extractJsonBlock, SCENARIO_PRESETS, buildReworkDiff } = require('./swarm-engine');
 const { TOOLS } = require('./mcp-server');
 const { server, engine: httpEngine, normalizeAgentId } = require('./server');
+const { extractFilePatch } = require('./reply-parser');
+const { buildScenarioArtifacts, applyPass1Fault } = require('./scenarios');
 
 async function testBasetenClientTelemetryAndRetry() {
   console.log('\n--- [Suite 1] BasetenMuseClient Telemetry, Percentile & Retry/Timeout Tests ---');
@@ -229,6 +231,8 @@ async function testSelfHealingReworkLoop() {
   assert.ok(removed.some((line) => line.includes('a - b')), 'Diff must remove the broken pass-1 line');
   assert.ok(added.some((line) => line.includes('a + b')), 'Diff must add the self-healed line');
   assert.ok(appDiff.beforeSnippet && appDiff.afterSnippet, 'Diff must include before/after snippets');
+  assert.strictEqual(appDiff.source, 'model', 'A parsed non-simulated Baseten reply is credited to the model');
+  assert.deepStrictEqual(session.reworkSummary.map((c) => c.healedBy), ['model']);
   assert.ok(session.fileHistory['app.js'].length >= 2, 'fileHistory must snapshot each app.js write');
   assert.strictEqual(session.files['app.js'].diff, appDiff.diff, 'Per-file diff string must match the rework diff');
   const serializedRework = engine.serializeSession(session);
@@ -504,6 +508,152 @@ async function testScenarioPresetsAndPassDiffs() {
   }
 }
 
+function testReplyParserShapes() {
+  console.log('\n--- [Suite 7] Muse Spark reply parsing (realistic @builder patch shapes) ---');
+  const known = ['domain.js', 'app.js', 'test.js', 'index.html'];
+  const fixed = "function breached(m, s) {\n  return m >= s; // \"minutes\"\n}\nmodule.exports = { breached };";
+  const asJson = JSON.stringify(fixed);
+  const cases = [
+    ['fenced json, files array', '```json\n{"messageToVerifier":"@verifier fixed","files":[{"path":"domain.js","content":' + asJson + '}]}\n```', 'json_files_array'],
+    ['<think> block + prose + fence, ./ path', '<think>The SLA compares minutes to ms {not good}.</think>\nRoot cause found. Patch below:\n```json\n{"files":[{"path":"./domain.js","content":' + asJson + '}]}\n```\nLet me know!', 'json_files_array'],
+    ['files object map', '{"messageToVerifier":"ok","files":{"domain.js":' + asJson + '}}', 'json_files_object'],
+    ['files object map with {content}', '{"files":{"./domain.js":{"content":' + asJson + '}}}', 'json_files_object'],
+    ['single path/content pair', 'Sure.\n{"path":"domain.js","content":' + asJson + ',"messageToVerifier":"fixed"}', 'json_single_file'],
+    ['raw newlines inside the JSON string', '```json\n{"files":[{"path":"domain.js","content":"' + fixed.replace(/"/g, '\\"') + '"}]}\n```', 'json_files_array'],
+    ['template-literal value', '{"files":{"domain.js":`' + fixed + '`}}', 'json_files_object'],
+    ['absolute workspace path + trailing comma', '{"files":[{"path":"/tmp/x/workspaces/sprint-priority-engine-ab12/domain.js","content":' + asJson + '},]}', 'json_files_array'],
+    ['patch key + file/code keys', '{"patch":[{"file":"domain.js","code":' + asJson + '}]}', 'json_patch_array'],
+    ['prose with a labelled ```javascript fence', 'The bug is in **domain.js**:\n```javascript\n' + fixed + '\n```', 'fenced_code'],
+    ['fence with a // file: comment', '```js\n// file: domain.js\n' + fixed + '\n```', 'fenced_code'],
+  ];
+  for (const [label, reply, format] of cases) {
+    const out = extractFilePatch(reply, known);
+    assert.strictEqual(out.format, format, `${label}: format`);
+    assert.deepStrictEqual(Object.keys(out.files), ['domain.js'], `${label}: path`);
+    const expected = format === 'fenced_code' && label.includes('file:') ? `// file: domain.js\n${fixed}` : fixed;
+    assert.strictEqual(out.files['domain.js'], expected, `${label}: content`);
+  }
+  const truncated = extractFilePatch('```json\n{"files":[{"path":"domain.js","content":"function breached(m, s) {\\n  return m >=', known);
+  assert.deepStrictEqual(truncated.files, {}, 'truncated reply yields no patch');
+  const unknownPath = extractFilePatch('{"files":[{"path":"../../etc/passwd","content":"x"},{"path":"other.js","content":"y"}]}', known);
+  assert.deepStrictEqual(unknownPath.files, {}, 'paths outside the workspace are ignored');
+  assert.strictEqual(extractJsonBlock('<think>{x}</think>\n{"verdict":"VERIFIED_PASS","qualityScore":91}').qualityScore, 91);
+  console.log(`[PASS] 7.1: reply parser handles ${cases.length} realistic patch shapes, truncation and unknown paths`);
+}
+
+function mockLiveBuilder(engine, makeFix) {
+  const base = engine.client;
+  const original = base.chatCompletion.bind(base);
+  const prompts = [];
+  base.chatCompletion = async (opts) => {
+    const user = opts.messages[opts.messages.length - 1].content;
+    if (opts.agentId === 'builder' && user.includes('Rework Attempt #')) {
+      prompts.push(user);
+      const res = {
+        id: 'mock-live',
+        model: 'meta-models/muse-spark-open-1026',
+        simulated: false,
+        content: makeFix(user),
+        reasoningContent: 'The test fails because the SLA check compares minutes against milliseconds.',
+        finishReason: 'stop',
+        usage: { promptTokens: 900, completionTokens: 700, totalTokens: 1600, reasoningTokens: 120 },
+        latencyMs: 2100,
+      };
+      if (opts.onProgress) opts.onProgress({ type: 'llm_complete', agentId: 'builder', simulated: false, content: res.content, reasoningContent: res.reasoningContent, finishReason: 'stop', usage: res.usage });
+      return res;
+    }
+    return original(opts);
+  };
+  return prompts;
+}
+
+async function runSprintHeal(makeFix) {
+  const engine = new MuseSwarmEngine();
+  const events = [];
+  engine.on('event', (ev) => events.push(ev));
+  const prompts = makeFix ? mockLiveBuilder(engine, makeFix) : null;
+  const session = engine.createSession({
+    prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+    scenarioId: 'sprint-priority-engine',
+    projectName: 'attribution-test',
+    simulateBrokenFirstPass: true,
+  });
+  try {
+    await engine.executeSwarm(session);
+    const benchmark = JSON.parse(session.files['benchmark.json'].content);
+    return { engine, session, events, prompts, benchmark, serialized: engine.serializeSession(session) };
+  } finally {
+    fs.rmSync(session.workspaceDir, { recursive: true, force: true });
+  }
+}
+
+async function testReworkAttribution() {
+  const artifacts = buildScenarioArtifacts('sprint-priority-engine');
+  const fault = applyPass1Fault(artifacts, 'sprint-priority-engine');
+  const phases = (s) => s.verificationRuns.map((r) => [r.phase, r.passed]);
+  const sources = (s, file) => s.fileHistory[file].map((h) => `${h.author}:${h.source}`);
+
+  // Offline: no model patch, engine restores, never labelled 'model'.
+  const offline = await runSprintHeal(null);
+  assert.deepStrictEqual(phases(offline.session), [['pass1_initial', false], ['rework_verify', true]]);
+  assert.deepStrictEqual(sources(offline.session, 'domain.js'), ['engine:scenario_fixture', 'engine:fault_injection', 'engine:deterministic_restore']);
+  const offDiff = offline.session.reworkDiffs.find((d) => d.path === 'domain.js');
+  assert.strictEqual(offDiff.author, 'engine');
+  assert.strictEqual(offDiff.source, 'deterministic_restore');
+  assert.strictEqual(offDiff.verifiedPass, true);
+  assert.deepStrictEqual(offline.benchmark.healedBy, ['deterministic_restore']);
+  assert.strictEqual(offline.benchmark.reworkSummary[0].modelPatch, 'missing');
+  assert.deepStrictEqual(offline.serialized.healedBy, ['deterministic_restore']);
+  const allSources = Object.values(offline.session.fileHistory).flat().map((h) => h.source);
+  assert.ok(!allSources.includes('model'), 'offline writes must never be labelled model');
+  const offReply = offline.serialized.modelReplies.find((r) => r.phase === 'rework_fix');
+  assert.ok(offReply && offReply.simulated === true && offReply.content.length > 0, 'raw rework reply stored');
+  const offWrite = offline.events.find((e) => e.eventType === 'file_written' && e.path === 'domain.js' && e.source === 'deterministic_restore');
+  assert.ok(offWrite && offWrite.author === 'engine', 'SSE file_written carries engine attribution');
+  assert.ok(offline.events.some((e) => e.eventType === 'llm_complete' && e.agentId === 'builder' && typeof e.content === 'string'), 'SSE llm_complete carries raw content');
+  console.log('[PASS] 7.2: offline self-heal is attributed to engine / deterministic_restore everywhere');
+
+  // Live-shaped model patch that changes and fixes domain.js: credited to the model, not overwritten.
+  const marker = '// healed by @builder (Muse Spark)';
+  const good = await runSprintHeal(() =>
+    '<think>minutes vs ms</think>\nRoot cause: SLA unit mismatch.\n```json\n' +
+    JSON.stringify({ messageToVerifier: '@verifier SLA now compares minutes to minutes.', files: [{ path: './domain.js', content: `${artifacts['domain.js']}\n${marker}\n` }] }) +
+    '\n```'
+  );
+  assert.ok(good.prompts[0].includes('--- domain.js ---') && good.prompts[0].includes(fault.broken.split('\n').find((l) => l.includes('pass-1 fault')).trim()), 'fix prompt carries the faulty domain.js');
+  assert.ok(good.prompts[0].includes('"files": [ { "path":'), 'fix prompt asks for a strict {files:[{path, content}]} patch');
+  assert.deepStrictEqual(phases(good.session), [['pass1_initial', false], ['rework_verify', true]]);
+  assert.ok(good.session.files['domain.js'].content.includes(marker), 'passing model patch is kept');
+  assert.deepStrictEqual(sources(good.session, 'domain.js'), ['engine:scenario_fixture', 'engine:fault_injection', '@builder:model']);
+  const goodDiff = good.session.reworkDiffs.find((d) => d.path === 'domain.js');
+  assert.strictEqual(goodDiff.source, 'model');
+  assert.strictEqual(goodDiff.verifiedPass, true);
+  assert.ok(goodDiff.fixedBy.startsWith('@builder'));
+  assert.deepStrictEqual(good.benchmark.healedBy, ['model']);
+  assert.strictEqual(good.benchmark.reworkSummary[0].modelPatch, 'passed');
+  const goodReply = good.serialized.modelReplies.find((r) => r.phase === 'rework_fix');
+  assert.ok(goodReply.content.includes(marker) && goodReply.reasoningContent.includes('milliseconds') && goodReply.simulated === false);
+  assert.strictEqual(goodReply.parse.format, 'json_files_array');
+  console.log('[PASS] 7.3: a model patch that changes and fixes domain.js is credited to model and not overwritten');
+
+  // Model echoes the file unchanged: engine falls back to deterministic_restore.
+  const same = await runSprintHeal(() => JSON.stringify({ files: [{ path: 'domain.js', content: fault.broken }] }));
+  assert.deepStrictEqual(phases(same.session), [['pass1_initial', false], ['rework_verify', true]]);
+  assert.strictEqual(same.benchmark.reworkSummary[0].modelPatch, 'unchanged');
+  assert.deepStrictEqual(same.benchmark.healedBy, ['deterministic_restore']);
+  assert.strictEqual(same.session.reworkDiffs.find((d) => d.path === 'domain.js').source, 'deterministic_restore');
+  console.log('[PASS] 7.4: an unchanged model patch falls back to deterministic_restore');
+
+  // Model changes the file but it still fails: labelled extra run, then engine restore.
+  const bad = await runSprintHeal(() => JSON.stringify({ files: [{ path: 'domain.js', content: `${fault.broken}\n// tried\n` }] }));
+  assert.deepStrictEqual(phases(bad.session), [['pass1_initial', false], ['rework_verify', false], ['restore_verify', true]]);
+  assert.strictEqual(bad.benchmark.reworkSummary[0].modelPatch, 'failed');
+  assert.deepStrictEqual(bad.benchmark.healedBy, ['deterministic_restore']);
+  const badDiffs = bad.session.reworkDiffs.filter((d) => d.path === 'domain.js').map((d) => [d.source, d.verifiedPass]);
+  assert.deepStrictEqual(badDiffs, [['model', false], ['deterministic_restore', true]]);
+  console.log('[PASS] 7.5: a failing model patch is labelled, then replaced by deterministic_restore');
+}
+
 async function main() {
   console.log('=== MuseSwarm Engineering Test & Verification Suite ===');
   await testBasetenClientTelemetryAndRetry();
@@ -512,6 +662,8 @@ async function main() {
   await testServerEndpoints();
   await runFullSwarmE2E();
   await testScenarioPresetsAndPassDiffs();
+  testReplyParserShapes();
+  await testReworkAttribution();
   console.log('\n✔ ALL UNIT, API & E2E ASSERTIONS PASSED!');
 }
 
