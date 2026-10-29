@@ -1114,6 +1114,134 @@ async function testProtectedScenarioTests() {
   } finally {
     fs.rmSync(sessionB.workspaceDir, { recursive: true, force: true });
   }
+
+  const shimAppJs = `${artifacts['app.js']}
+const __assert = require('assert');
+['strictEqual', 'ok', 'deepStrictEqual', 'throws', 'equal', 'notStrictEqual'].forEach(function (k) {
+  if (typeof __assert[k] === 'function') __assert[k] = function () {};
+  if (__assert.strict && typeof __assert.strict[k] === 'function') __assert.strict[k] = function () {};
+});
+`;
+  const engineC = new MuseSwarmEngine({ offline: true, allowOfflineFallback: true });
+  const origC = engineC.client.chatCompletion.bind(engineC.client);
+  engineC.client.chatCompletion = async (opts) => {
+    const user = opts.messages[opts.messages.length - 1].content;
+    if (opts.agentId === 'builder' && user.includes('Rework Attempt')) {
+      return {
+        id: 'shim-assert-appjs',
+        simulated: false,
+        content: JSON.stringify({
+          messageToVerifier: '@verifier tests now pass',
+          files: [{ path: 'app.js', content: shimAppJs }],
+        }),
+        finishReason: 'stop',
+        usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20, reasoningTokens: 0 },
+        latencyMs: 20,
+      };
+    }
+    return origC(opts);
+  };
+  const sessionC = engineC.createSession({
+    prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+    scenarioId: 'sprint-priority-engine',
+    projectName: 'case-c-assert-shim',
+    simulateBrokenFirstPass: true,
+  });
+  try {
+    await engineC.executeSwarm(sessionC);
+    const healedC = (sessionC.reworkSummary || []).map((c) => c.healedBy);
+    const benchC = JSON.parse(sessionC.files['benchmark.json'].content);
+    assert.ok(!healedC.includes('model'), 'path C must not credit healedBy model for an app.js assert shim');
+    assert.ok(!(benchC.healedBy || []).includes('model'));
+    assert.ok(!sessionC.reworkSummary.some((c) => (c.filesPatchedByModel || []).includes('app.js')));
+    assert.ok(
+      sessionC.fileHistory['app.js'].some((h) => h.source === 'rejected_non_target' && h.content.includes('__assert')),
+      'app.js shim must be recorded as rejected_non_target'
+    );
+    const replyC = (sessionC.modelReplies || []).find((r) => r.phase === 'rework_fix');
+    assert.ok(replyC && (replyC.parse.rejectedNonTargets || []).includes('app.js'));
+    assert.strictEqual(replyC.parse.modelPatch, 'rejected_non_target');
+    assert.notStrictEqual(sessionC.files['app.js'].source, 'model');
+    const faultStillPresent = sessionC.files['domain.js'].content.includes('pass-1 fault');
+    if (sessionC.rubricEvaluation?.verdict === 'VERIFIED_PASS') {
+      assert.ok(!faultStillPresent, 'must not be VERIFIED_PASS while the SLA fault remains');
+      assert.ok(healedC.includes('deterministic_restore'));
+    } else {
+      assert.ok(faultStillPresent || healedC.includes('deterministic_restore'));
+    }
+    console.log('[PASS] 10.3: path C app.js assert shim cannot yield healedBy model or a verified pass with the SLA fault');
+  } finally {
+    fs.rmSync(sessionC.workspaceDir, { recursive: true, force: true });
+  }
+
+  // Leftover build-time app.js shim + a non-fixing domain.js "patch" would pass workspace
+  // tests; the independent grade (fixture app.js + model domain.js) must reject it.
+  const fault = applyPass1Fault(artifacts, 'sprint-priority-engine');
+  const fakeDomain = `${fault.broken}\n// pretend fix, SLA still broken\n`;
+  const engineD = new MuseSwarmEngine({ offline: true, allowOfflineFallback: true });
+  const origD = engineD.client.chatCompletion.bind(engineD.client);
+  engineD.client.chatCompletion = async (opts) => {
+    const user = opts.messages[opts.messages.length - 1].content;
+    if (opts.agentId === 'builder' && !user.includes('Rework Attempt')) {
+      return {
+        id: 'shim-assert-build',
+        simulated: false,
+        content: JSON.stringify({
+          files: [
+            { path: 'app.js', content: shimAppJs },
+            { path: 'index.html', content: artifacts['index.html'] },
+          ],
+        }),
+        finishReason: 'stop',
+        usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20, reasoningTokens: 0 },
+        latencyMs: 20,
+      };
+    }
+    if (opts.agentId === 'builder' && user.includes('Rework Attempt')) {
+      return {
+        id: 'fake-domain-patch',
+        simulated: false,
+        content: JSON.stringify({
+          messageToVerifier: '@verifier domain.js patched',
+          files: [{ path: 'domain.js', content: fakeDomain }],
+        }),
+        finishReason: 'stop',
+        usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20, reasoningTokens: 0 },
+        latencyMs: 20,
+      };
+    }
+    return origD(opts);
+  };
+  const sessionD = engineD.createSession({
+    prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+    scenarioId: 'sprint-priority-engine',
+    projectName: 'case-c-grade-check',
+    simulateBrokenFirstPass: true,
+  });
+  try {
+    await engineD.executeSwarm(sessionD);
+    const pass1 = sessionD.verificationRuns.find((r) => r.phase === 'pass1_initial');
+    assert.strictEqual(pass1.passed, false, 'Pass 1 independent grade must fail a leftover app.js assert shim');
+    assert.ok(pass1.checks.some((c) => c.name === 'independent_grade' && c.passed === false));
+    const healedD = (sessionD.reworkSummary || []).map((c) => c.healedBy);
+    assert.ok(!healedD.includes('model'), 'unfixed domain.js must not be credited to model even if workspace tests pass');
+    assert.ok(!(JSON.parse(sessionD.files['benchmark.json'].content).healedBy || []).includes('model'));
+    assert.ok(
+      sessionD.fileHistory['domain.js'].some((h) => h.source === 'rejected_grading_check' && h.content.includes('pretend fix')),
+      'fake domain.js patch must be recorded as rejected_grading_check'
+    );
+    const replyD = (sessionD.modelReplies || []).find((r) => r.phase === 'rework_fix');
+    assert.ok(replyD && replyD.parse.modelPatch === 'rejected_grading_check');
+    assert.ok((replyD.parse.rejectedGradingCheckFiles || []).includes('domain.js'));
+    assert.ok(!sessionD.reworkSummary.some((c) => (c.filesPatchedByModel || []).includes('domain.js')));
+    if (sessionD.rubricEvaluation?.verdict === 'VERIFIED_PASS') {
+      assert.ok(!sessionD.files['domain.js'].content.includes('pass-1 fault'), 'must not be VERIFIED_PASS while the SLA fault remains');
+      assert.ok(healedD.includes('deterministic_restore'));
+    }
+    console.log('[PASS] 10.3b: leftover app.js shim + unfixed domain.js is rejected_grading_check, not healedBy model');
+  } finally {
+    fs.rmSync(sessionD.workspaceDir, { recursive: true, force: true });
+  }
 }
 
 async function main() {
