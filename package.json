@@ -1,7 +1,7 @@
 {
   "name": "muse-swarm",
   "version": "1.1.0",
-  "description": "MuseSwarm — Multi-Agent Bot-to-Bot Software Engineering Collaboration Engine powered by Meta Muse Spark Open (meta-models/muse-spark-open-1026) on Baseten + Cursor MCP & Muse Code CLI integration",
+  "description": "MuseSwarm — Multi-Agent Bot-to-Bot Software Engineering Collaboration Engine powered by Meta Muse Spark Open (meta-models/muse-spark-open-1026) on Baseten + Cursor MCP integration",
   "main": "src/index.js",
   "bin": {
     "muse-swarm": "./src/cli.js",
