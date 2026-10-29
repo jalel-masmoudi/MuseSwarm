@@ -655,7 +655,15 @@ function buildOnCallArtifacts() {
       const from = victim.engineerId;
       victim.engineerId = quietest.id;
       victim.rebalanced = true;
-      return { moved: true, shiftId: victim.id, from: from, to: quietest.id, fairnessIndex: this.fairnessIndex() };
+      return {
+        moved: true,
+        shiftId: victim.id,
+        from: from,
+        to: quietest.id,
+        busiest: busiest.id,
+        quietest: quietest.id,
+        fairnessIndex: this.fairnessIndex(),
+      };
     }
   }
 
@@ -700,14 +708,25 @@ assert.strictEqual(jainIndex([1, 1, 1]), 1);
 assert.strictEqual(even.rebalance().moved, false);
 console.log('[PASS] equal incident load keeps Jain fairness at 1');
 
-roster.recordIncident({ engineerId: 'ada', severity: 1 });
-roster.recordIncident({ engineerId: 'ada', severity: 1 });
-roster.recordIncident({ engineerId: 'bao', severity: 3 });
+roster.recordIncident({ engineerId: 'ada', severity: 2 });
+roster.recordIncident({ engineerId: 'bao', severity: 1 });
+roster.recordIncident({ engineerId: 'bao', severity: 1 });
 assert.ok(roster.fairnessIndex() < 0.85);
+assert.deepStrictEqual(['ada', 'bao', 'chi'].map(function (id) { return roster.loadOf(id); }), [3, 10, 0]);
 const moved = roster.rebalance();
 assert.strictEqual(moved.moved, true);
-assert.ok(moved.to);
+assert.strictEqual(moved.busiest, 'bao', 'highest incident load (bao=10) is the busiest');
+assert.strictEqual(moved.quietest, 'chi', 'lowest incident load (chi=0) is the quietest');
+assert.strictEqual(moved.from, 'bao');
+assert.strictEqual(moved.to, 'chi');
+assert.strictEqual(moved.shiftId, asia.id);
+assert.strictEqual(asia.engineerId, 'chi');
+assert.strictEqual(asia.rebalanced, true);
+assert.strictEqual(americas.engineerId, 'chi');
+assert.strictEqual(utc.engineerId, 'ada');
+assert.strictEqual(roster.shifts.filter(function (s) { return s.engineerId === 'bao'; }).length, 0);
 console.log('[PASS] fatigue above the fairness floor moves an open shift');
+console.log('[PASS] rebalance moves load from the busiest engineer to the quietest');
 
 assert.throws(function () { roster.addEngineer({ id: 'nope', timezone: 'Mars' }); }, /Unsupported timezone/);
 assert.throws(function () { new OnCallScheduler().assignShift({ startUtc: '2026-10-29T09:00:00Z' }); }, /No engineers/);
@@ -912,6 +931,16 @@ function buildScenarioArtifacts(scenarioId) {
   return preset.buildArtifacts();
 }
 
+// Live-seen bug: sort ascending (quietest first) but still treat ranked[0] as busiest,
+// which inverts rebalance. The fixture tests pin the real direction so this cannot pass.
+function applyOnCallAscendingBusiestFault(domainJs) {
+  const needle = 'this.engineers.slice().sort((a, b) => this.loadOf(b.id) - this.loadOf(a.id)';
+  if (typeof domainJs !== 'string' || !domainJs.includes(needle)) {
+    throw new Error('oncall rebalance sort anchor missing');
+  }
+  return domainJs.replace(needle, 'this.engineers.slice().sort((a, b) => this.loadOf(a.id) - this.loadOf(b.id)');
+}
+
 function applyPass1Fault(artifacts, scenarioId) {
   const preset = getScenario(scenarioId);
   if (!preset) return null;
@@ -928,20 +957,33 @@ function applyPass1Fault(artifacts, scenarioId) {
 }
 
 function serializeScenarios() {
-  return SCENARIO_PRESETS.map((preset) => ({
-    id: preset.id,
-    title: preset.title,
-    tagline: preset.tagline,
-    prompt: preset.prompt,
-    projectName: preset.projectName,
-    highlights: preset.highlights,
-    files: AUTHORED_FILES.concat(['benchmark.json']),
-    pass1Fault: {
-      file: preset.pass1Fault.file,
-      summary: preset.pass1Fault.summary,
-    },
-    artifacts: preset.buildArtifacts(),
-  }));
+  return SCENARIO_PRESETS.map((preset) => {
+    const artifacts = preset.buildArtifacts();
+    return {
+      id: preset.id,
+      title: preset.title,
+      tagline: preset.tagline,
+      prompt: preset.prompt,
+      projectName: preset.projectName,
+      highlights: preset.highlights,
+      files: AUTHORED_FILES.concat(['benchmark.json']),
+      protectedFiles: scenarioTestFiles(artifacts),
+      pass1Fault: {
+        file: preset.pass1Fault.file,
+        summary: preset.pass1Fault.summary,
+      },
+      artifacts,
+    };
+  });
+}
+
+function isScenarioTestFile(relPath) {
+  const base = String(relPath || '').replace(/\\/g, '/').replace(/^(\.\/)+/, '').split('/').pop();
+  return base === 'test.js' || /^test.*\.js$/i.test(base) || /\.test\.js$/i.test(base);
+}
+
+function scenarioTestFiles(artifacts) {
+  return Object.keys(artifacts || {}).filter(isScenarioTestFile);
 }
 
 module.exports = {
@@ -951,5 +993,8 @@ module.exports = {
   resolveScenarioId,
   buildScenarioArtifacts,
   applyPass1Fault,
+  applyOnCallAscendingBusiestFault,
+  isScenarioTestFile,
+  scenarioTestFiles,
   serializeScenarios,
 };
