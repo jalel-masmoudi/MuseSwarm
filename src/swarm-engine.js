@@ -69,6 +69,10 @@ function replySource(res) {
   return res && res.simulated === false ? 'model' : 'offline_fixture';
 }
 
+function isEmptyLengthReply(res) {
+  return Boolean(res) && res.finishReason === 'length' && !String(res.content || '').trim();
+}
+
 function recordModelReply(session, { agent, phase, res, parse, reworkAttempt = 0 }) {
   if (!session.modelReplies) session.modelReplies = [];
   const entry = {
@@ -297,8 +301,11 @@ class MuseSwarmEngine extends EventEmitter {
           timestamp: new Date().toISOString(),
         },
       ],
-      telemetry: this.client.getTelemetry(),
+      telemetry: null,
     };
+
+    session._telSnap = this.client.snapshotUsage();
+    session.telemetry = this.client.telemetrySince(session._telSnap);
 
     this.sessions.set(id, session);
     this.activeSessionId = id;
@@ -307,7 +314,9 @@ class MuseSwarmEngine extends EventEmitter {
   }
 
   emitEvent(session, eventType, payload) {
-    session.telemetry = this.client.getTelemetry();
+    session.telemetry = session._telSnap
+      ? this.client.telemetrySince(session._telSnap)
+      : this.client.getTelemetry();
     const event = {
       eventType,
       sessionId: session.id,
@@ -667,7 +676,8 @@ class MuseSwarmEngine extends EventEmitter {
   }
 
   generateBenchmarkSummary(session) {
-    const tel = this.client.getTelemetry();
+    if (session._telSnap) session.telemetry = this.client.telemetrySince(session._telSnap);
+    const tel = session.telemetry || this.client.getTelemetry();
     const createdMs = new Date(session.createdAt).getTime();
     const completedMs = session.completedAt ? new Date(session.completedAt).getTime() : Date.now();
     const durationMs = Math.max(1, completedMs - createdMs);
@@ -819,6 +829,7 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with the followin
       const archRes = await this.client.chatCompletion({
         agentId: 'architect',
         maxTokens: 8000,
+        timeoutMs: CONFIG.longRequestTimeoutMs,
         temperature: 0.2,
         onProgress,
         messages: [
@@ -912,27 +923,28 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with the followin
       });
       this.emitEvent(session, 'agent_active', { agentId: 'builder', phase: 'Code Implementation (TASK-1)' });
 
-      const builderPrompt = `You are @builder executing TASK-1 for the project: "${session.prompt}".
+      const builderPromptFor = (tight) => `You are @builder executing TASK-1 for the project: "${session.prompt}".
 
 Here is \`brief.md\` from @architect:
-${archPlan.briefMd}
+${(archPlan.briefMd || '').slice(0, tight ? 1200 : 4000)}
 
 Here is \`runbook.md\` from @architect:
-${archPlan.runbookMd}
+${(archPlan.runbookMd || '').slice(0, tight ? 1200 : 4000)}
 
 Message from @architect:
 "${archPlan.messageToBuilder}"
 
-Write the complete, working implementation files now.
+Write compact, complete files now. Do not deliberate${tight ? ' (your previous reply ran out of tokens while reasoning and returned no files)' : ''}: put tokens into file contents, not commentary.
 CRITICAL RULES:
-1. \`app.js\` MUST be pure JavaScript with ZERO external npm packages. It must export its functions/classes for Node.js (\`if (typeof module !== 'undefined' && module.exports) { module.exports = { ... }; }\`) AND attach them to \`globalThis.AppCore = { ... }\` so \`index.html\` can use them directly in the browser!
-2. \`test.js\` MUST require \`./app.js\` using Node's built-in \`assert\` module, run at least 5 thorough unit/integration tests covering normal and edge cases, print clear \`[PASS]\` lines for each test, and exit with code 0.
-3. \`index.html\` MUST be a sleek, self-contained, modern dark-mode interactive web application that loads \`<script src="app.js"></script>\` and lets a user interactively use all features in the browser.
+1. \`app.js\` MUST be pure JavaScript with ZERO external npm packages. Export for Node (\`module.exports\`) AND \`globalThis.AppCore\`.
+2. \`test.js\` MUST require \`./app.js\`, use Node \`assert\`, print \`[PASS]\` lines, and exit 0. At least 5 tests.
+3. \`index.html\` MUST be a short dark-mode page that loads \`<script src="app.js"></script>\` (keep it under 80 lines).
+4. Messages to other bots: one sentence each. No long comments in source.
 
 Return ONLY one strict JSON object (no prose, no markdown fences). Every file's full source goes in a JSON string, with newlines escaped as \\n and double quotes escaped as \\". Schema:
 {
-  "messageToArchitect": "Message to @architect confirming how you implemented the runbook contract.",
-  "messageToVerifier": "Message to @verifier (with @verifier mention) handing off TASK-1 for verification and explaining what test.js covers.",
+  "messageToArchitect": "One sentence to @architect.",
+  "messageToVerifier": "One sentence to @verifier.",
   "files": [
     { "path": "app.js", "content": "<full source of app.js>" },
     { "path": "index.html", "content": "<full source of index.html>" },
@@ -940,27 +952,45 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Every file's 
   ]
 }`;
 
-      const builderRes = await this.client.chatCompletion({
-        agentId: 'builder',
-        maxTokens: 16000,
-        temperature: 0.2,
-        onProgress,
-        messages: [
-          { role: 'system', content: loadSoul('builder') },
-          { role: 'user', content: builderPrompt },
-        ],
-      });
+      const callBuilder = (tight) =>
+        this.client.chatCompletion({
+          agentId: 'builder',
+          maxTokens: 16000,
+          timeoutMs: CONFIG.longRequestTimeoutMs,
+          temperature: tight ? 0.1 : 0.2,
+          reasoningEffort: 'low',
+          onProgress,
+          messages: [
+            { role: 'system', content: loadSoul('builder') },
+            { role: 'user', content: builderPromptFor(tight) },
+          ],
+        });
 
-      const builderPatch = extractFilePatch(builderRes.content, ['app.js', 'index.html', 'test.js']);
-      const builderOut = builderPatch.parsedJson
-        ? { ...(extractJsonBlock(builderRes.content) || {}), files: builderPatch.files }
-        : null;
+      let builderRes = await callBuilder(false);
+      let builderPatch = extractFilePatch(builderRes.content, ['app.js', 'index.html', 'test.js']);
+      const builderRetryReason =
+        !Object.keys(builderPatch.files).length && builderRes.finishReason === 'length'
+          ? 'finish_reason_length_no_files'
+          : null;
       recordModelReply(session, {
         agent: '@builder',
         phase: 'build',
         res: builderRes,
-        parse: { parsedJson: builderPatch.parsedJson, format: builderPatch.format, files: Object.keys(builderPatch.files) },
+        parse: { parsedJson: builderPatch.parsedJson, format: builderPatch.format, files: Object.keys(builderPatch.files), retryReason: builderRetryReason },
       });
+      if (builderRetryReason) {
+        builderRes = await callBuilder(true);
+        builderPatch = extractFilePatch(builderRes.content, ['app.js', 'index.html', 'test.js']);
+        recordModelReply(session, {
+          agent: '@builder',
+          phase: 'build_retry',
+          res: builderRes,
+          parse: { parsedJson: builderPatch.parsedJson, format: builderPatch.format, files: Object.keys(builderPatch.files), retryOf: 'build', retryReason: builderRetryReason },
+        });
+      }
+      const builderOut = builderPatch.parsedJson
+        ? { ...(extractJsonBlock(builderRes.content) || {}), files: builderPatch.files }
+        : null;
       const builderSource = replySource(builderRes);
       if (session.scenarioId && session._cleanArtifacts) {
         for (const relPath of ['domain.js', 'app.js', 'test.js', 'index.html']) {
@@ -1088,6 +1118,7 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Each patched 
         const fixRes = await this.client.chatCompletion({
           agentId: 'builder',
           maxTokens: 16000,
+          timeoutMs: CONFIG.longRequestTimeoutMs,
           temperature: 0.1,
           onProgress,
           messages: [
@@ -1298,46 +1329,72 @@ Return ONLY a valid JSON object inside a \`\`\`json code block:
       });
       this.emitEvent(session, 'agent_active', { agentId: 'lead', phase: 'Documentation & Launch Synthesis (TASK-3)' });
 
-      const leadPrompt = `You are @lead wrapping up the MuseSwarm build for "${session.prompt}".
+      const leadPromptFor = (tight) => `You are @lead wrapping up the MuseSwarm build for "${session.prompt}".
 Verified files: ${Object.keys(session.files).join(', ')}
 Rubric Score: ${session.rubricEvaluation.qualityScore}/100
 Test output:
-${testRun.stdout}
+${(testRun.stdout || '').slice(0, tight ? 600 : 2000)}
 
-Return ONLY a valid JSON object inside a \`\`\`json code block:
+Write a short, structured release note. Do not deliberate: answer directly${tight ? ' (your previous reply ran out of tokens while reasoning and returned no content)' : ''}.
+Return ONLY one strict JSON object (no prose, no markdown fences) with newlines escaped as \\n:
 {
-  "readmeMd": "Complete, well-structured README.md for the generated project explaining features, architecture, how to open index.html, and how to run node test.js.",
-  "finalBroadcast": "Final synthesis message to @all summarizing what @architect, @builder, @verifier, and @lead accomplished together."
+  "readmeMd": "README.md, at most ${tight ? 25 : 60} lines: title, one-paragraph summary, ## Features (bullets), ## Files (one bullet per file), ## Run (node test.js, open index.html)",
+  "finalBroadcast": "One or two sentences to @all summarizing what @architect, @builder, @verifier, and @lead accomplished."
 }`;
 
-      const leadRes = await this.client.chatCompletion({
-        agentId: 'lead',
-        maxTokens: 2500,
-        temperature: 0.3,
-        onProgress,
-        messages: [
-          { role: 'system', content: loadSoul('lead') },
-          { role: 'user', content: leadPrompt },
-        ],
-      });
+      const callLead = (tight) =>
+        this.client.chatCompletion({
+          agentId: 'lead',
+          maxTokens: 16000,
+          temperature: tight ? 0.1 : 0.3,
+          timeoutMs: CONFIG.longRequestTimeoutMs,
+          reasoningEffort: 'low',
+          onProgress,
+          messages: [
+            { role: 'system', content: loadSoul('lead') },
+            { role: 'user', content: leadPromptFor(tight) },
+          ],
+        });
+      const isLeadOut = (o) => typeof o.readmeMd === 'string';
+      const leadParseInfo = (parsed) => ({ parsedJson: Boolean(parsed), keys: parsed ? Object.keys(parsed) : [] });
 
-      const leadParsed = extractJsonBlock(leadRes.content, (o) => typeof o.readmeMd === 'string');
+      let leadRes = await callLead(false);
+      let leadParsed = extractJsonBlock(leadRes.content, isLeadOut);
+      const leadRetryReason =
+        !leadParsed && leadRes.finishReason === 'length' && !String(leadRes.content || '').trim()
+          ? 'finish_reason_length_empty_content'
+          : null;
       recordModelReply(session, {
         agent: '@lead',
         phase: 'release',
         res: leadRes,
-        parse: { parsedJson: Boolean(leadParsed), keys: leadParsed ? Object.keys(leadParsed) : [] },
+        parse: { ...leadParseInfo(leadParsed), retryReason: leadRetryReason },
       });
+      if (leadRetryReason) {
+        leadRes = await callLead(true);
+        leadParsed = extractJsonBlock(leadRes.content, isLeadOut);
+        recordModelReply(session, {
+          agent: '@lead',
+          phase: 'release_retry',
+          res: leadRes,
+          parse: { ...leadParseInfo(leadParsed), retryOf: 'release', retryReason: leadRetryReason },
+        });
+      }
+      if (leadParsed && !isLeadOut(leadParsed)) leadParsed = null;
+      const leadSource = replySource(leadRes);
       const leadDefault = {
         readmeMd: `# ${archPlan.projectTitle || 'MuseSwarm Generated App'}\n\nBuilt autonomously by **MuseSwarm** (\`@architect\`, \`@builder\`, \`@verifier\`, \`@lead\`) powered by Meta's \`Muse Spark Open\` (\`meta-models/muse-spark-open-1026\`) on Baseten.\n\n## Run Tests\n\`\`\`bash\nnode test.js\n\`\`\`\n\n## Open Web App\nOpen \`index.html\` in your browser or via the MuseSwarm Live Preview drawer.`,
         finalBroadcast: `@all Release package synthesized! All Kanban tasks (TASK-1, TASK-2, TASK-3) are complete, verified by @verifier (${session.rubricEvaluation.qualityScore}/100), and documented in README.md.`,
       };
 
       const leadOut = { ...leadDefault, ...(leadParsed || {}) };
-      if (session._cleanArtifacts?.['README.md']) {
+      // A live @lead README wins; offline, the richer scenario README beats the canned offline reply.
+      if (leadParsed && leadSource === 'model') {
+        this.writeWorkspaceFile(session, 'README.md', leadParsed.readmeMd, '@lead', 'model');
+      } else if (session._cleanArtifacts?.['README.md']) {
         this.writeWorkspaceFile(session, 'README.md', session._cleanArtifacts['README.md'], 'engine', 'scenario_fixture');
-      } else if (typeof leadParsed?.readmeMd === 'string') {
-        this.writeWorkspaceFile(session, 'README.md', leadParsed.readmeMd, '@lead', replySource(leadRes));
+      } else if (leadParsed) {
+        this.writeWorkspaceFile(session, 'README.md', leadParsed.readmeMd, '@lead', leadSource);
       } else {
         this.writeWorkspaceFile(session, 'README.md', leadDefault.readmeMd, 'engine', 'engine_fallback');
       }
@@ -1348,7 +1405,7 @@ Return ONLY a valid JSON object inside a \`\`\`json code block:
         delivery: 'notify',
         content: leadOut.finalBroadcast,
         reasoning: leadRes.reasoningContent,
-        metadata: { phase: 'session_complete', taskId: 'TASK-3', tokens: leadRes.usage?.totalTokens || 0, reasoningTokens: leadRes.usage?.reasoningTokens || 0, latencyMs: leadRes.latencyMs || 0 },
+        metadata: { phase: 'session_complete', source: typeof leadParsed?.finalBroadcast === 'string' ? leadSource : 'engine_fallback', taskId: 'TASK-3', tokens: leadRes.usage?.totalTokens || 0, reasoningTokens: leadRes.usage?.reasoningTokens || 0, latencyMs: leadRes.latencyMs || 0 },
       });
 
       this.updateKanbanTask(session, 'TASK-3', {
@@ -1572,7 +1629,7 @@ console.log('ALL 5 TESTS PASSED SUCCESSFULLY.');
       rubricEvaluation: session.rubricEvaluation || null,
       benchmark: session.benchmark || null,
       ObserverAdvisories: session.ObserverAdvisories,
-      telemetry: this.client.getTelemetry(),
+      telemetry: session.telemetry || (session._telSnap ? this.client.telemetrySince(session._telSnap) : this.client.getTelemetry()),
     };
   }
 }
