@@ -182,6 +182,8 @@ function buildReworkDiff({ filePath, before, after, author, reworkAttempt }) {
     passTo: (reworkAttempt || 1) + 1,
     reworkAttempt: reworkAttempt || 1,
     diff: formatUnifiedDiff(filePath, ops),
+    pass1: String(before),
+    pass2: String(after),
     beforeSnippet: lineSnippet(beforeLines, firstDel ? firstDel.oldLine : 1),
     afterSnippet: lineSnippet(afterLines, firstAdd ? firstAdd.newLine : 1),
     timestamp: new Date().toISOString(),
