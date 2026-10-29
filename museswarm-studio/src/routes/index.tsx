@@ -920,7 +920,14 @@ export function Studio() {
           {tab === "rubric" && (
             <Rubric checks={checks} score={score} verdict={verdict} sandboxStdout={sandboxStdout} rubricBreakdown={rubricBreakdown} testJs={files["test.js"] || ""} />
           )}
-          {tab === "mcp" && <McpBridge brief={prompt} scenarioId={active.id} sessionId={activeSessionId} />}
+          {tab === "mcp" && (
+            <McpBridge
+              brief={prompt}
+              scenarioId={active.id}
+              sessionId={activeSessionId}
+              simulateBrokenFirstPass={active.expectsRework}
+            />
+          )}
         </Panel>
       </main>
 
@@ -984,7 +991,12 @@ export function Studio() {
                 Close
               </button>
             </div>
-            <McpBridge brief={prompt} scenarioId={active.id} sessionId={activeSessionId} />
+            <McpBridge
+              brief={prompt}
+              scenarioId={active.id}
+              sessionId={activeSessionId}
+              simulateBrokenFirstPass={active.expectsRework}
+            />
           </div>
         </div>
       )}

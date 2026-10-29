@@ -6,67 +6,95 @@ export const MCP_CONFIG = `{
     "muse-swarm": {
       "command": "node",
       "args": ["src/mcp-server.js"],
-      "env": { "BASETEN_API_KEY": "\${env:BASETEN_API_KEY}" }
+      "env": { "BASETEN_API_KEY": "\${env:BASETEN_API_KEY}" },
+      "tools": [
+        "muse_swarm_list_agents",
+        "muse_swarm_ask_agent",
+        "muse_swarm_cobuild",
+        "muse_swarm_telemetry"
+      ]
     }
   }
 }
 `;
 
+export type McpToolName =
+  | "muse_swarm_list_agents"
+  | "muse_swarm_ask_agent"
+  | "muse_swarm_cobuild"
+  | "muse_swarm_telemetry";
+
 export type McpTool = {
-  name: "muse_swarm_status" | "muse_swarm_run" | "muse_swarm_steer" | "muse_swarm_rework";
+  name: McpToolName;
   description: string;
   inputSchema: Record<string, unknown>;
 };
 
+/** Schemas copied from src/mcp-server.js. cobuild also lists the optional fields PR #1's POST /api/mcp/invoke forwards. */
 export const MCP_TOOLS: McpTool[] = [
   {
-    name: "muse_swarm_status",
+    name: "muse_swarm_list_agents",
     description:
-      "Live swarm status: @architect, @builder, @verifier, @lead, Baseten telemetry, and the active session.",
+      "List the specialized MuseSwarm bots (@architect, @builder, @verifier, @lead), their toolsets, and Baseten Muse Spark Open telemetry.",
     inputSchema: {
       type: "object",
       properties: {},
-      additionalProperties: false,
     },
   },
   {
-    name: "muse_swarm_run",
+    name: "muse_swarm_ask_agent",
     description:
-      "Start a multi-agent co-build. Body is { brief, scenarioId } on POST /api/swarm/run (prompt is mirrored for older servers).",
+      "Send a direct peer message to a specific MuseSwarm specialist (@architect, @builder, @verifier, or @lead) powered by meta-models/muse-spark-open-1026 on Baseten.",
     inputSchema: {
       type: "object",
       properties: {
-        brief: { type: "string", description: "Engineering brief for the swarm" },
-        scenarioId: { type: "string", description: "Judge scenario id" },
-        projectName: { type: "string" },
-      },
-      required: ["brief"],
-    },
-  },
-  {
-    name: "muse_swarm_steer",
-    description: "Steer one specialist on the session bus (@architect, @builder, @verifier, @lead).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        agent: { type: "string", enum: ["architect", "builder", "verifier", "lead"] },
-        message: { type: "string" },
-        sessionId: { type: "string" },
+        agent: {
+          type: "string",
+          enum: ["architect", "builder", "verifier", "lead"],
+          description: "Target specialist agent ID",
+        },
+        message: {
+          type: "string",
+          description: "Question, code snippet, or task to send to the specialist bot",
+        },
       },
       required: ["agent", "message"],
     },
   },
   {
-    name: "muse_swarm_rework",
-    description: "Open the @verifier → @builder self-healing loop (Pass 1 failure, Pass 2 patch).",
+    name: "muse_swarm_cobuild",
+    description:
+      "Run a full autonomous multi-agent bot-to-bot software build session (@architect -> @builder -> @verifier -> @lead) with Kanban tracking, rubric scoring, and sandbox test verification.",
     inputSchema: {
       type: "object",
       properties: {
-        brief: { type: "string" },
-        scenarioId: { type: "string" },
-        sessionId: { type: "string" },
+        prompt: {
+          type: "string",
+          description: "Software feature or application specification for the swarm to co-build and verify",
+        },
+        projectName: {
+          type: "string",
+          description: "Optional short slug for the output workspace folder",
+        },
+        scenarioId: {
+          type: "string",
+          description: "Optional judge scenario preset id",
+        },
+        simulateBrokenFirstPass: {
+          type: "boolean",
+          description: "Inject a Pass 1 fault so @verifier and @builder run the self-heal loop",
+        },
       },
-      required: ["brief"],
+      required: ["prompt"],
+    },
+  },
+  {
+    name: "muse_swarm_telemetry",
+    description:
+      "Retrieve Baseten Muse Spark Open 2M TPM rolling window utilization, p50/p95 latency percentiles, reasoning token statistics, and active swarm session benchmarks.",
+    inputSchema: {
+      type: "object",
+      properties: {},
     },
   },
 ];
@@ -188,35 +216,37 @@ async function fallbackInvoke(
   args: Record<string, unknown>,
   sessionId: string | null,
 ): Promise<{ via: string; body: unknown }> {
-  const brief = str(args["brief"] || args["prompt"]);
-  const scenarioId = str(args["scenarioId"]);
-  if (tool === "muse_swarm_status") {
+  if (tool === "muse_swarm_list_agents") {
     const res = await fetchJson("/api/status");
     return { via: "fallback GET /api/status", body: res.json ?? { ok: false, error: "status unavailable" } };
   }
-  if (tool === "muse_swarm_run" || tool === "muse_swarm_rework") {
-    const path = tool === "muse_swarm_rework" ? "/api/swarm/rework" : "/api/swarm/run";
-    const res = await fetchJson(path, {
+  if (tool === "muse_swarm_telemetry") {
+    const res = await fetchJson("/api/telemetry");
+    return { via: "fallback GET /api/telemetry", body: res.json ?? { ok: false, error: "telemetry unavailable" } };
+  }
+  if (tool === "muse_swarm_cobuild") {
+    const prompt = str(args["prompt"] || args["brief"]);
+    const scenarioId = str(args["scenarioId"]);
+    const res = await fetchJson("/api/swarm/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        brief,
-        prompt: brief,
-        scenarioId,
+        prompt,
+        brief: prompt,
         projectName: args["projectName"] || scenarioId,
-        sessionId: args["sessionId"] || sessionId,
-        simulateBrokenFirstPass: tool === "muse_swarm_rework",
+        scenarioId,
+        simulateBrokenFirstPass: Boolean(args["simulateBrokenFirstPass"]),
       }),
     });
-    return { via: `fallback POST ${path}`, body: res.json ?? { ok: false, error: `${path} unavailable` } };
+    return { via: "fallback POST /api/swarm/run", body: res.json ?? { ok: false, error: "/api/swarm/run unavailable" } };
   }
   const res = await fetchJson("/api/swarm/message", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       agent: args["agent"] || "architect",
-      message: args["message"] || args["text"] || "",
-      sessionId: args["sessionId"] || sessionId,
+      message: args["message"] || "",
+      sessionId,
     }),
   });
   return {
