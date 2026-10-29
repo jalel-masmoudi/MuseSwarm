@@ -341,7 +341,18 @@ async function testServerEndpoints() {
     const mcpNameJson = await mcpNameRes.json();
     assert.strictEqual(mcpNameJson.ok, true);
     assert.ok(mcpNameJson.response.result.content[0].text.includes('telemetry'));
-    console.log('[PASS] 4.6: POST /api/mcp/invoke returns the MCP JSON-RPC result and latency');
+    const statusToolRes = await fetch(`${baseUrl}/api/mcp/invoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool: 'muse_swarm_status', arguments: {} }),
+    });
+    const statusToolJson = await statusToolRes.json();
+    assert.strictEqual(statusToolJson.ok, true, 'Studio muse_swarm_status alias must resolve');
+    const statusBody = JSON.parse(statusToolJson.response.result.content[0].text);
+    assert.strictEqual(statusBody.model, 'meta-models/muse-spark-open-1026');
+    assert.ok(statusBody.activeSession && statusBody.activeSession.reworkCycles >= 1);
+    assert.ok(diffJson.reworkDiffs[0].pass1 && diffJson.reworkDiffs[0].pass2, 'Diffs must carry full Pass 1 / Pass 2 text');
+    console.log('[PASS] 4.6: POST /api/mcp/invoke returns the MCP JSON-RPC result and latency (incl. Studio muse_swarm_status)');
 
     if (rwJson.session?.workspaceDir && fs.existsSync(rwJson.session.workspaceDir)) {
       fs.rmSync(rwJson.session.workspaceDir, { recursive: true, force: true });

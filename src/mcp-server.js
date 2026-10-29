@@ -89,9 +89,57 @@ function sendError(id, code, message) {
   process.stdout.write(payload + '\n');
 }
 
+// The web Studio's Cursor MCP Bridge uses these names; route them to the canonical tools.
+const STUDIO_TOOL_ALIASES = {
+  muse_swarm_run: (args) => ['muse_swarm_cobuild', { ...args, prompt: args.prompt || args.brief }],
+  muse_swarm_rework: (args) => [
+    'muse_swarm_cobuild',
+    { ...args, prompt: args.prompt || args.brief, simulateBrokenFirstPass: true },
+  ],
+  muse_swarm_steer: (args) => ['muse_swarm_ask_agent', args],
+};
+
+function statusSnapshot(active) {
+  const session = active.activeSessionId ? active.sessions.get(active.activeSessionId) : null;
+  const lastRun = session?.verificationRuns?.[session.verificationRuns.length - 1] || null;
+  return {
+    model: CONFIG.modelId,
+    endpoint: CONFIG.basetenBaseUrl,
+    agents: Object.values(AGENT_PROFILES).map((p) => ({ handle: p.handle, role: p.role })),
+    telemetry: active.client.getTelemetry(),
+    sessionsCount: active.sessions.size,
+    activeSession: session
+      ? {
+          id: session.id,
+          scenarioId: session.scenarioId || null,
+          status: session.status,
+          verdict: session.rubricEvaluation?.verdict || null,
+          qualityScore: session.rubricEvaluation?.qualityScore ?? null,
+          reworkCycles: session.reworkCycles || 0,
+          reworkDiffs: (session.reworkDiffs || []).map((d) => d.path),
+          sandboxPassed: lastRun ? lastRun.passed : null,
+          checks: lastRun ? `${lastRun.passedCount}/${lastRun.checks.length}` : null,
+          filesWritten: Object.keys(session.files || {}),
+        }
+      : null,
+  };
+}
+
 async function executeToolCall(toolName, args = {}, eng = engine) {
   const active = eng || engine;
+  if (STUDIO_TOOL_ALIASES[toolName]) {
+    const [canonical, mapped] = STUDIO_TOOL_ALIASES[toolName](args || {});
+    return executeToolCall(canonical, mapped, active);
+  }
   try {
+    if (toolName === 'muse_swarm_status') {
+      return {
+        result: {
+          content: [{ type: 'text', text: JSON.stringify(statusSnapshot(active), null, 2) }],
+        },
+      };
+    }
+
     if (toolName === 'muse_swarm_list_agents') {
       return {
         result: {

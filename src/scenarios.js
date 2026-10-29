@@ -932,6 +932,7 @@ function serializeScenarios() {
     id: preset.id,
     title: preset.title,
     tagline: preset.tagline,
+    description: preset.tagline,
     prompt: preset.prompt,
     projectName: preset.projectName,
     highlights: preset.highlights,
