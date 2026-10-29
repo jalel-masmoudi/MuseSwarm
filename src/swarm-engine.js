@@ -4,6 +4,13 @@ const { execSync } = require('child_process');
 const EventEmitter = require('events');
 const { CONFIG } = require('./config');
 const { BasetenMuseClient } = require('./baseten-client');
+const {
+  SCENARIO_PRESETS,
+  resolveScenarioId,
+  buildScenarioArtifacts,
+  applyPass1Fault,
+  serializeScenarios,
+} = require('./scenarios');
 
 const AGENT_PROFILES = {
   architect: {
@@ -75,6 +82,123 @@ function extractJsonBlock(text) {
   return null;
 }
 
+// ponytail: O(n*m) line LCS. Fine for workspace files under a few thousand lines; switch to Myers if artifacts grow past that.
+function diffLineOps(beforeLines, afterLines) {
+  const n = beforeLines.length;
+  const m = afterLines.length;
+  const dp = new Array(n + 1);
+  for (let i = 0; i <= n; i++) dp[i] = new Uint32Array(m + 1);
+  for (let i = n - 1; i >= 0; i--) {
+    const row = dp[i];
+    const next = dp[i + 1];
+    for (let j = m - 1; j >= 0; j--) {
+      row[j] = beforeLines[i] === afterLines[j] ? next[j + 1] + 1 : Math.max(next[j], row[j + 1]);
+    }
+  }
+
+  const ops = [];
+  let i = 0;
+  let j = 0;
+  let oldLine = 1;
+  let newLine = 1;
+  while (i < n && j < m) {
+    if (beforeLines[i] === afterLines[j]) {
+      ops.push({ t: ' ', line: beforeLines[i], oldLine, newLine });
+      i += 1;
+      j += 1;
+      oldLine += 1;
+      newLine += 1;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      ops.push({ t: '-', line: beforeLines[i], oldLine, newLine: null });
+      i += 1;
+      oldLine += 1;
+    } else {
+      ops.push({ t: '+', line: afterLines[j], oldLine: null, newLine });
+      j += 1;
+      newLine += 1;
+    }
+  }
+  while (i < n) {
+    ops.push({ t: '-', line: beforeLines[i], oldLine, newLine: null });
+    i += 1;
+    oldLine += 1;
+  }
+  while (j < m) {
+    ops.push({ t: '+', line: afterLines[j], oldLine: null, newLine });
+    j += 1;
+    newLine += 1;
+  }
+  return ops;
+}
+
+function formatUnifiedDiff(filePath, ops) {
+  const context = 3;
+  const keep = ops.map((op) => op.t !== ' ');
+  for (let i = 0; i < ops.length; i++) {
+    if (ops[i].t === ' ') continue;
+    const from = Math.max(0, i - context);
+    const to = Math.min(ops.length - 1, i + context);
+    for (let k = from; k <= to; k++) keep[k] = true;
+  }
+
+  const lines = [`--- a/${filePath}`, `+++ b/${filePath}`];
+  let idx = 0;
+  while (idx < ops.length) {
+    if (!keep[idx]) {
+      idx += 1;
+      continue;
+    }
+    let end = idx;
+    while (end < ops.length && keep[end]) end += 1;
+    const hunk = ops.slice(idx, end);
+    const oldStart = (hunk.find((op) => op.oldLine) || {}).oldLine || 1;
+    const newStart = (hunk.find((op) => op.newLine) || {}).newLine || 1;
+    const oldCount = hunk.filter((op) => op.t !== '+').length;
+    const newCount = hunk.filter((op) => op.t !== '-').length;
+    lines.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`);
+    for (const op of hunk) lines.push(op.t + op.line);
+    idx = end;
+  }
+  return lines.join('\n');
+}
+
+function lineSnippet(lines, lineNo, radius = 3) {
+  const center = Math.max(1, Number(lineNo) || 1);
+  const start = Math.max(0, center - 1 - radius);
+  const end = Math.min(lines.length, center + radius);
+  return lines.slice(start, end).join('\n');
+}
+
+function buildReworkDiff({ filePath, before, after, author, reworkAttempt }) {
+  const beforeLines = String(before).replace(/\r\n/g, '\n').split('\n');
+  const afterLines = String(after).replace(/\r\n/g, '\n').split('\n');
+  const ops = diffLineOps(beforeLines, afterLines);
+  const firstDel = ops.find((op) => op.t === '-');
+  const firstAdd = ops.find((op) => op.t === '+');
+  return {
+    path: filePath,
+    author,
+    passFrom: 1,
+    passTo: (reworkAttempt || 1) + 1,
+    reworkAttempt: reworkAttempt || 1,
+    diff: formatUnifiedDiff(filePath, ops),
+    beforeSnippet: lineSnippet(beforeLines, firstDel ? firstDel.oldLine : 1),
+    afterSnippet: lineSnippet(afterLines, firstAdd ? firstAdd.newLine : 1),
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function injectGenericPass1Fault(source) {
+  const broken = String(source).replace(
+    /const slaBreached = [^;]+;/,
+    'const slaBreached = false; // simulated unit-mismatch bug (hours vs ms)'
+  );
+  if (broken !== source) {
+    return `${broken}\n// Intentional pass-1 bug for self-heal verification`;
+  }
+  return `${source}\nmodule.exports.TaskPriorityEngine = class { addItem() { throw new Error("AssertionError: slaBreached unit mismatch (hours vs ms)"); } };`;
+}
+
 class MuseSwarmEngine extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -85,9 +209,10 @@ class MuseSwarmEngine extends EventEmitter {
     this.activeSessionId = null;
   }
 
-  createSession({ prompt, projectName = null, parallelFanout = undefined, simulateBrokenFirstPass = false }) {
+  createSession({ prompt, projectName = null, parallelFanout = undefined, simulateBrokenFirstPass = false, scenarioId = null }) {
     const id = `swarm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    const slug = (projectName || prompt.slice(0, 32))
+    const resolvedScenarioId = resolveScenarioId(scenarioId, prompt);
+    const slug = (projectName || resolvedScenarioId || prompt.slice(0, 32))
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '') || 'app';
@@ -99,6 +224,7 @@ class MuseSwarmEngine extends EventEmitter {
       slug,
       prompt,
       workspaceDir,
+      scenarioId: resolvedScenarioId,
       parallelFanout: parallelFanout !== undefined ? parallelFanout : this.enableParallelFanout,
       simulateBrokenFirstPass: Boolean(simulateBrokenFirstPass),
       status: 'initialized',
@@ -108,6 +234,8 @@ class MuseSwarmEngine extends EventEmitter {
       messages: [], // Bot-to-bot session message bus
       kanban: [],   // Auditable Kanban tasks + comments + history
       files: {},    // Relative path -> file metadata/content preview
+      fileHistory: {}, // Relative path -> revision snapshots
+      reworkDiffs: [], // Pass 1 -> Pass 2 unified diffs from the self-heal loop
       verificationRuns: [],
       parallelTasksRun: [],
       reworkCycles: 0,
@@ -305,20 +433,54 @@ class MuseSwarmEngine extends EventEmitter {
     const safeRel = relPath.replace(/^(\.\.(\/|\\|$))+/, '').replace(/^\/+/, '');
     const fullPath = path.join(session.workspaceDir, safeRel);
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, content, 'utf8');
+    const text = String(content);
+    fs.writeFileSync(fullPath, text, 'utf8');
+
+    if (!session.fileHistory) session.fileHistory = {};
+    if (!session.reworkDiffs) session.reworkDiffs = [];
+
+    const previous = session.files[safeRel];
+    const history = session.fileHistory[safeRel] || (session.fileHistory[safeRel] = []);
+    const updatedAt = new Date().toISOString();
+    const pass = (session.reworkCycles || 0) > 0 ? session.reworkCycles + 1 : 1;
+    history.push({
+      revision: history.length + 1,
+      author: authorAgent,
+      updatedAt,
+      bytes: Buffer.byteLength(text, 'utf8'),
+      pass,
+      content: text,
+    });
+
+    let diffMeta = null;
+    if (session._captureReworkDiff && typeof previous?.content === 'string' && previous.content !== text) {
+      diffMeta = buildReworkDiff({
+        filePath: safeRel,
+        before: previous.content,
+        after: text,
+        author: authorAgent,
+        reworkAttempt: session.reworkCycles || 1,
+      });
+      session.reworkDiffs.push(diffMeta);
+    }
 
     session.files[safeRel] = {
       path: safeRel,
-      size: Buffer.byteLength(content, 'utf8'),
+      size: Buffer.byteLength(text, 'utf8'),
       author: authorAgent,
-      updatedAt: new Date().toISOString(),
-      content,
+      updatedAt,
+      content: text,
+      diff: diffMeta ? diffMeta.diff : (previous?.diff || null),
+      beforeSnippet: diffMeta ? diffMeta.beforeSnippet : (previous?.beforeSnippet || null),
+      afterSnippet: diffMeta ? diffMeta.afterSnippet : (previous?.afterSnippet || null),
     };
 
     this.emitEvent(session, 'file_written', {
       path: safeRel,
       author: authorAgent,
       size: session.files[safeRel].size,
+      revision: history.length,
+      reworkDiff: Boolean(diffMeta),
     });
     return fullPath;
   }
@@ -465,7 +627,10 @@ class MuseSwarmEngine extends EventEmitter {
       mode: tel.mode,
       status: session.status,
       durationMs,
+      scenarioId: session.scenarioId || null,
       reworkCycles: session.reworkCycles || 0,
+      reworkDiffs: session.reworkDiffs || [],
+      fileHistory: session.fileHistory || {},
       parallelFanouts: (session.parallelTasksRun || []).length,
       messagesExchanged: (session.messages || []).length,
       kanbanTasksTotal: (session.kanban || []).length,
@@ -614,8 +779,14 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with the followin
         messageToVerifier: `@verifier Once @builder completes TASK-1, run the test suite and audit app.js and index.html against our acceptance criteria.`,
       };
 
-      this.writeWorkspaceFile(session, 'brief.md', archPlan.briefMd, '@architect');
-      this.writeWorkspaceFile(session, 'runbook.md', archPlan.runbookMd, '@architect');
+      if (session.scenarioId) {
+        session._cleanArtifacts = buildScenarioArtifacts(session.scenarioId);
+        this.writeWorkspaceFile(session, 'brief.md', session._cleanArtifacts['brief.md'], '@architect');
+        this.writeWorkspaceFile(session, 'runbook.md', session._cleanArtifacts['runbook.md'], '@architect');
+      } else {
+        this.writeWorkspaceFile(session, 'brief.md', archPlan.briefMd, '@architect');
+        this.writeWorkspaceFile(session, 'runbook.md', archPlan.runbookMd, '@architect');
+      }
 
       for (const t of archPlan.kanbanTasks || []) {
         this.createKanbanTask(session, t);
@@ -690,7 +861,11 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with this exact s
       });
 
       const builderOut = extractJsonBlock(builderRes.content);
-      if (builderOut && builderOut.files && builderOut.files['app.js']) {
+      if (session.scenarioId && session._cleanArtifacts) {
+        for (const relPath of ['domain.js', 'app.js', 'test.js', 'index.html']) {
+          this.writeWorkspaceFile(session, relPath, session._cleanArtifacts[relPath], '@builder');
+        }
+      } else if (builderOut && builderOut.files && builderOut.files['app.js']) {
         const fileEntries = Object.entries(builderOut.files).filter(([, code]) => typeof code === 'string');
         await this.runParallelTasks(
           session,
@@ -749,17 +924,16 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with this exact s
       });
       this.emitEvent(session, 'agent_active', { agentId: 'verifier', phase: 'Sandbox Verification & QA Audit (TASK-2)' });
 
-      let savedCleanAppJs = null;
-      if (session.simulateBrokenFirstPass && session.files["app.js"]) {
-        savedCleanAppJs = session.files["app.js"].content;
-        const brokenAppJs = savedCleanAppJs.replace(
-          /const slaBreached = [^;]+;/,
-          "const slaBreached = false; // simulated unit-mismatch bug (hours vs ms)"
-        ) + "\n// Intentional pass-1 bug for self-heal verification";
-        if (brokenAppJs !== savedCleanAppJs + "\n// Intentional pass-1 bug for self-heal verification") {
-          this.writeWorkspaceFile(session, "app.js", brokenAppJs, "@builder");
-        } else {
-          this.writeWorkspaceFile(session, "app.js", savedCleanAppJs + "\nmodule.exports.TaskPriorityEngine = class { addItem() { throw new Error(\"AssertionError: slaBreached unit mismatch (hours vs ms)\"); } };", "@builder");
+      let savedCleanFiles = null;
+      if (session.simulateBrokenFirstPass) {
+        if (session.scenarioId && session._cleanArtifacts) {
+          const fault = applyPass1Fault(session._cleanArtifacts, session.scenarioId);
+          savedCleanFiles = { [fault.file]: fault.clean };
+          this.writeWorkspaceFile(session, fault.file, fault.broken, '@builder');
+        } else if (session.files['app.js']) {
+          const clean = session.files['app.js'].content;
+          savedCleanFiles = { 'app.js': clean };
+          this.writeWorkspaceFile(session, 'app.js', injectGenericPass1Fault(clean), '@builder');
         }
       }
       let testRun = this.runWorkspaceTests(session);
@@ -769,6 +943,7 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with this exact s
       while (!testRun.passed && reworkAttempt < this.maxReworkLoops) {
         reworkAttempt += 1;
         session.reworkCycles = reworkAttempt;
+        session._captureReworkDiff = true;
 
         this.updateKanbanTask(session, 'TASK-1', {
           status: 'rework',
@@ -832,8 +1007,15 @@ Fix the issue and return ONLY a JSON block:
         }
         testRun = this.runWorkspaceTests(session);
 
-        // If still failing on the final rework attempt, engage deterministic self-healing fallback
-        if (!testRun.passed && savedCleanAppJs) { this.writeWorkspaceFile(session, 'app.js', savedCleanAppJs, '@builder'); testRun = this.runWorkspaceTests(session); }
+        // Deterministic heal: restore the pre-fault sources and record the Pass 1 -> Pass 2 diff.
+        if (!testRun.passed && savedCleanFiles) {
+          for (const [relPath, code] of Object.entries(savedCleanFiles)) {
+            if (session.files[relPath]?.content !== code) {
+              this.writeWorkspaceFile(session, relPath, code, '@builder');
+            }
+          }
+          testRun = this.runWorkspaceTests(session);
+        }
         if (!testRun.passed && reworkAttempt >= this.maxReworkLoops) {
           this.writeFallbackArtifacts(session);
           testRun = this.runWorkspaceTests(session);
@@ -984,7 +1166,8 @@ Return ONLY a valid JSON object inside a \`\`\`json code block:
         finalBroadcast: `@all Release package synthesized! All Kanban tasks (TASK-1, TASK-2, TASK-3) are complete, verified by @verifier (${session.rubricEvaluation.qualityScore}/100), and documented in README.md.`,
       };
 
-      this.writeWorkspaceFile(session, 'README.md', leadOut.readmeMd, '@lead');
+      const readmeMd = session._cleanArtifacts?.['README.md'] || leadOut.readmeMd;
+      this.writeWorkspaceFile(session, 'README.md', readmeMd, '@lead');
 
       this.postBotMessage(session, {
         from: '@lead',
@@ -1196,6 +1379,7 @@ console.log('ALL 5 TESTS PASSED SUCCESSFULLY.');
       id: session.id,
       slug: session.slug,
       prompt: session.prompt,
+      scenarioId: session.scenarioId || null,
       workspaceDir: session.workspaceDir,
       status: session.status,
       createdAt: session.createdAt,
@@ -1204,6 +1388,8 @@ console.log('ALL 5 TESTS PASSED SUCCESSFULLY.');
       messages: session.messages,
       kanban: session.kanban,
       files: Object.values(session.files),
+      fileHistory: session.fileHistory || {},
+      reworkDiffs: session.reworkDiffs || [],
       verificationRuns: session.verificationRuns,
       parallelTasksRun: session.parallelTasksRun || [],
       reworkCycles: session.reworkCycles || 0,
@@ -1215,4 +1401,12 @@ console.log('ALL 5 TESTS PASSED SUCCESSFULLY.');
   }
 }
 
-module.exports = { MuseSwarmEngine, AGENT_PROFILES, extractJsonBlock };
+module.exports = {
+  MuseSwarmEngine,
+  AGENT_PROFILES,
+  extractJsonBlock,
+  SCENARIO_PRESETS,
+  resolveScenarioId,
+  serializeScenarios,
+  buildReworkDiff,
+};
