@@ -81,7 +81,7 @@ function loadExistingWorkspaces() {
             parallelTasksRun: [],
             reworkCycles: 0,
             ObserverAdvisories: [],
-            telemetry: engine.client.getTelemetry(),
+            telemetry: getEffectiveTelemetry(),
           };
           engine.sessions.set(id, session);
           if (!engine.activeSessionId) engine.activeSessionId = id;
@@ -92,6 +92,21 @@ function loadExistingWorkspaces() {
 }
 
 loadExistingWorkspaces();
+
+function getEffectiveTelemetry() {
+  const liveTel = engine.client.getTelemetry();
+  if (liveTel.totalCalls > 0) return liveTel;
+  const active = engine.activeSessionId ? engine.sessions.get(engine.activeSessionId) : null;
+  if (active && active.telemetry && active.telemetry.totalCalls > 0) {
+    return {
+      ...active.telemetry,
+      hasApiKey: liveTel.hasApiKey || active.telemetry.hasApiKey,
+      mode: liveTel.hasApiKey ? "live-baseten" : active.telemetry.mode,
+    };
+  }
+  return liveTel;
+}
+
 
 // Save session snapshot whenever completed
 engine.on('event', (ev) => {
@@ -162,7 +177,7 @@ const server = http.createServer(async (req, res) => {
       Connection: 'keep-alive',
       'Access-Control-Allow-Origin': '*',
     });
-    res.write(`data: ${JSON.stringify({ eventType: 'connected', telemetry: engine.client.getTelemetry() })}\n\n`);
+    res.write(`data: ${JSON.stringify({ eventType: 'connected', telemetry: getEffectiveTelemetry() })}\n\n`);
     sseClients.add(res);
     req.on('close', () => sseClients.delete(res));
     return;
@@ -181,7 +196,7 @@ const server = http.createServer(async (req, res) => {
       uptimeSec: Math.round(process.uptime()),
       modelId: CONFIG.modelId,
       endpoint: CONFIG.basetenBaseUrl,
-      telemetry: engine.client.getTelemetry(),
+      telemetry: getEffectiveTelemetry(),
       sessionsCount: sessions.length,
       benchmarks,
     });
@@ -195,7 +210,7 @@ const server = http.createServer(async (req, res) => {
       modelId: CONFIG.modelId,
       endpoint: CONFIG.basetenBaseUrl,
       agents: AGENT_PROFILES,
-      telemetry: engine.client.getTelemetry(),
+      telemetry: getEffectiveTelemetry(),
       sessions,
       activeSessionId: engine.activeSessionId,
     });
@@ -297,7 +312,7 @@ const server = http.createServer(async (req, res) => {
         usage: llmRes.usage,
         latencyMs: llmRes.latencyMs,
         message: postedMsg,
-        telemetry: engine.client.getTelemetry(),
+        telemetry: getEffectiveTelemetry(),
       });
     } catch (err) {
       return sendJson(res, 500, { ok: false, error: err.message });
