@@ -38,6 +38,8 @@ const CONFIG = {
   port: parseInt(process.env.PORT || '4321', 10),
   tpmLimit: parseInt(process.env.MUSE_SWARM_TPM_LIMIT || '2000000', 10),
   requestTimeoutMs: parseInt(process.env.MUSE_SWARM_TIMEOUT_MS || '45000', 10),
+  // File-bearing calls (@architect / @builder / @lead) stream large replies plus reasoning.
+  longRequestTimeoutMs: parseInt(process.env.MUSE_SWARM_LONG_TIMEOUT_MS || '120000', 10),
   maxRetries: parseInt(process.env.MUSE_SWARM_MAX_RETRIES || '3', 10),
   retryBaseDelayMs: parseInt(process.env.MUSE_SWARM_RETRY_BASE_MS || '400', 10),
   maxReworkLoops: parseInt(process.env.MUSE_SWARM_MAX_REWORK || '2', 10),
