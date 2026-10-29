@@ -4,6 +4,7 @@ const path = require('path');
 const { BasetenMuseClient, computePercentile } = require('./baseten-client');
 const { MuseSwarmEngine, AGENT_PROFILES, extractJsonBlock } = require('./swarm-engine');
 const { TOOLS } = require('./mcp-server');
+const { server, normalizeAgentId } = require('./server');
 
 async function testBasetenClientTelemetryAndRetry() {
   console.log('\n--- [Suite 1] BasetenMuseClient Telemetry, Percentile & Retry/Timeout Tests ---');
@@ -18,7 +19,6 @@ async function testBasetenClientTelemetryAndRetry() {
   const mockFetch = async () => {
     callIndex += 1;
     if (callIndex === 1) {
-      // Simulate transient HTTP 429 Too Many Requests with Retry-After header
       return {
         ok: false,
         status: 429,
@@ -27,7 +27,6 @@ async function testBasetenClientTelemetryAndRetry() {
       };
     }
     if (callIndex === 2) {
-      // Simulate transient HTTP 503 Service Unavailable
       return {
         ok: false,
         status: 503,
@@ -135,7 +134,6 @@ async function testMessageBusAndKanbanDependencies() {
   assert.strictEqual(session.parallelTasksRun.length, 1, 'Session should record parallel fan-out batch');
   console.log('[PASS] 2.3: Parallel module/task fan-out execution & telemetry');
 
-  // Clean up unit test workspace
   fs.rmSync(session.workspaceDir, { recursive: true, force: true });
 }
 
@@ -165,7 +163,6 @@ async function testSelfHealingReworkLoop() {
         };
       } else if (userContent.includes('You are @builder executing TASK-1')) {
         builderCallCount += 1;
-        // Intentionally emit a failing test on first attempt to trigger @verifier rework!
         replyJson = {
           messageToArchitect: '@architect Initial build written.',
           messageToVerifier: '@verifier Ready for test.',
@@ -177,7 +174,6 @@ async function testSelfHealingReworkLoop() {
         };
       } else if (userContent.includes('Rework Attempt #1')) {
         builderCallCount += 1;
-        // Fix the bug during Rework Attempt #1!
         replyJson = {
           messageToVerifier: '@verifier Fixed arithmetic bug in app.js (changed a - b to a + b).',
           files: {
@@ -225,8 +221,70 @@ async function testSelfHealingReworkLoop() {
   fs.rmSync(session.workspaceDir, { recursive: true, force: true });
 }
 
+async function testServerEndpoints() {
+  console.log('\n--- [Suite 4] HTTP API & Studio Endpoints (/api/status, /api/telemetry, /api/swarm/message, /api/swarm/rework) ---');
+
+  if (typeof normalizeAgentId === 'function') {
+    assert.strictEqual(normalizeAgentId('@architect'), 'architect');
+    assert.strictEqual(normalizeAgentId('BUILDER'), 'builder');
+    assert.strictEqual(normalizeAgentId('@verifier'), 'verifier');
+  }
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const addr = server.address();
+  const baseUrl = `http://127.0.0.1:${addr.port}`;
+
+  try {
+    const statusRes = await fetch(`${baseUrl}/api/status`);
+    assert.strictEqual(statusRes.status, 200);
+    const statusJson = await statusRes.json();
+    assert.strictEqual(statusJson.ok, true);
+    console.log('[PASS] 4.1: GET /api/status returns agents, telemetry, and sessions');
+
+    const telRes = await fetch(`${baseUrl}/api/telemetry`);
+    assert.strictEqual(telRes.status, 200);
+    const telJson = await telRes.json();
+    assert.strictEqual(telJson.status, 'healthy');
+    console.log('[PASS] 4.2: GET /api/telemetry returns health and benchmark stats');
+
+    const msgRes = await fetch(`${baseUrl}/api/swarm/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: '@architect', message: 'Verify API contract' }),
+    });
+    assert.strictEqual(msgRes.status, 200);
+    const msgJson = await msgRes.json();
+    assert.strictEqual(msgJson.ok, true);
+    assert.strictEqual(msgJson.agent.handle, '@architect');
+    console.log('[PASS] 4.3: POST /api/swarm/message normalizes @architect handle and returns reply + reasoning');
+
+    const rwRes = await fetch(`${baseUrl}/api/swarm/rework`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+        projectName: 'api-rework-test',
+        sync: true,
+      }),
+    });
+    assert.strictEqual(rwRes.status, 200);
+    const rwJson = await rwRes.json();
+    assert.strictEqual(rwJson.ok, true);
+    assert.strictEqual(rwJson.session.reworkCycles, 1, 'Should record 1 rework cycle');
+    assert.strictEqual(rwJson.session.verificationRuns[0].passed, false, 'Fault-injected first pass must fail');
+    assert.strictEqual(rwJson.session.verificationRuns.slice(-1)[0].passed, true, 'Self-healed rework pass must succeed');
+    console.log('[PASS] 4.4: POST /api/swarm/rework executes fault injection -> self-healing verification');
+
+    if (rwJson.session?.workspaceDir && fs.existsSync(rwJson.session.workspaceDir)) {
+      fs.rmSync(rwJson.session.workspaceDir, { recursive: true, force: true });
+    }
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
 async function runFullSwarmE2E() {
-  console.log('\n--- [Suite 4] Full End-to-End Multi-Agent Co-Build Session & Artifacts Verification ---');
+  console.log('\n--- [Suite 5] Full End-to-End Multi-Agent Co-Build Session & Artifacts Verification ---');
   const engine = new MuseSwarmEngine();
 
   const session = engine.createSession({
@@ -250,10 +308,10 @@ async function runFullSwarmE2E() {
   const lastVer = session.verificationRuns[session.verificationRuns.length - 1];
   assert.ok(lastVer && lastVer.passed, 'Sandbox verification run must pass');
   assert.ok(session.rubricEvaluation && session.rubricEvaluation.qualityScore >= 85, 'Rubric quality score should be >= 85');
-  assert.strictEqual( TOOLS.length, 4, 'MCP server should expose 4 tools');
+  assert.strictEqual(TOOLS.length, 4, 'MCP server should expose 4 tools');
 
-  console.log('[PASS] 4.1: Full 4-agent workflow (@architect -> @builder -> @verifier -> @lead) & benchmark.json verified');
-  console.log('\n✔ ALL UNIT & E2E ASSERTIONS PASSED!');
+  console.log('[PASS] 5.1: Full 4-agent workflow (@architect -> @builder -> @verifier -> @lead) & benchmark.json verified');
+  console.log('\n✔ ALL UNIT, API & E2E ASSERTIONS PASSED!');
   console.log('Workspace:', session.workspaceDir);
   console.log('Rubric Score:', `${session.rubricEvaluation.qualityScore}/100 (${session.rubricEvaluation.verdict})`);
   console.log('Telemetry:', JSON.stringify(engine.client.getTelemetry()));
@@ -264,6 +322,7 @@ async function main() {
   await testBasetenClientTelemetryAndRetry();
   await testMessageBusAndKanbanDependencies();
   await testSelfHealingReworkLoop();
+  await testServerEndpoints();
   await runFullSwarmE2E();
 }
 

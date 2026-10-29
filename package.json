@@ -14,7 +14,9 @@
     "benchmark": "node src/cli.js benchmark",
     "demo": "node src/cli.js run --demo",
     "mcp": "node src/mcp-server.js",
-    "test": "node src/test-e2e.js"
+    "test": "node src/test-e2e.js",
+    "build:ui": "cd museswarm-studio && npm run build",
+    "dev:ui": "cd museswarm-studio && npm run dev"
   },
   "keywords": [
     "meta",
