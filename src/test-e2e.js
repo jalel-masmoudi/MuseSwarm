@@ -216,6 +216,10 @@ async function testSelfHealingReworkLoop() {
   assert.strictEqual(session.verificationRuns.length, 2, 'Should have 2 verification runs (1st failed, 2nd passed)');
   assert.strictEqual(session.verificationRuns[0].passed, false, 'First verification run must fail');
   assert.strictEqual(session.verificationRuns[1].passed, true, 'Second verification run after rework must pass');
+  assert.deepStrictEqual(
+    session.verificationRuns.map((r) => [r.pass, r.phase]),
+    [[1, 'pass1_initial'], [2, 'rework_verify']]
+  );
   console.log('[PASS] 3.1: @verifier detected failing assertion, routed stack trace to @builder, and verified fix');
 
   const appDiff = session.reworkDiffs.find((entry) => entry.path === 'app.js');
@@ -308,6 +312,11 @@ async function testServerEndpoints() {
     assert.strictEqual(rwJson.session.reworkCycles, 1, 'Should record 1 rework cycle');
     assert.strictEqual(rwJson.session.verificationRuns[0].passed, false, 'Fault-injected first pass must fail');
     assert.strictEqual(rwJson.session.verificationRuns.slice(-1)[0].passed, true, 'Self-healed rework pass must succeed');
+    assert.deepStrictEqual(
+      rwJson.session.verificationRuns.map((r) => [r.pass, r.phase, r.passed]),
+      [[1, 'pass1_initial', false], [2, 'rework_verify', true]],
+      '1 rework cycle must record exactly 1 failing + 1 passing verification'
+    );
     assert.ok(rwJson.session.reworkDiffs.length >= 1, 'Rework response must include unified diffs');
     console.log('[PASS] 4.4: POST /api/swarm/rework executes fault injection -> self-healing verification');
 
@@ -465,7 +474,12 @@ async function testScenarioPresetsAndPassDiffs() {
       assert.ok(/<button/i.test(session.files['index.html'].content), `${preset.id} preview should be interactive`);
       assert.strictEqual(session.verificationRuns[0].passed, false, `${preset.id} pass 1 must fail`);
       assert.strictEqual(session.verificationRuns[session.verificationRuns.length - 1].passed, true, `${preset.id} healed pass must succeed`);
-      assert.ok(session.reworkCycles >= 1, `${preset.id} must record a rework cycle`);
+      assert.strictEqual(session.reworkCycles, 1, `${preset.id} must record exactly 1 rework cycle`);
+      assert.deepStrictEqual(
+        session.verificationRuns.map((r) => [r.pass, r.phase, r.passed]),
+        [[1, 'pass1_initial', false], [2, 'rework_verify', true]],
+        `${preset.id}: 1 rework cycle = exactly 1 failing (Pass 1) + 1 passing (Pass 2) verification`
+      );
       const diff = session.reworkDiffs.find((entry) => entry.path === 'domain.js');
       assert.ok(diff, `${preset.id} must diff domain.js`);
       const removed = diff.diff.split('\n').filter((line) => line.startsWith('-') && !line.startsWith('---'));
@@ -477,6 +491,10 @@ async function testScenarioPresetsAndPassDiffs() {
       const benchmark = JSON.parse(session.files['benchmark.json'].content);
       assert.ok(benchmark.reworkDiffs.length >= 1, `${preset.id} benchmark.json must include reworkDiffs`);
       assert.ok(benchmark.fileHistory['domain.js'], `${preset.id} benchmark.json must include fileHistory`);
+      assert.strictEqual(benchmark.verification.runsCount, 2, `${preset.id} benchmark.json runsCount`);
+      assert.strictEqual(benchmark.verification.failedRuns, 1, `${preset.id} benchmark.json failedRuns`);
+      assert.strictEqual(benchmark.verification.passedRuns, 1, `${preset.id} benchmark.json passedRuns`);
+      assert.deepStrictEqual(benchmark.verification.runs.map((r) => r.phase), ['pass1_initial', 'rework_verify']);
       const serialized = engine.serializeSession(session);
       assert.ok(serialized.reworkDiffs.length >= 1 && serialized.fileHistory['domain.js']);
       console.log(`[PASS] 6.3 ${preset.id}: multi-file workspace, sandbox green, Pass 1 -> Pass 2 diff`);

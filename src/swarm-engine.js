@@ -485,9 +485,13 @@ class MuseSwarmEngine extends EventEmitter {
     return fullPath;
   }
 
-  runWorkspaceTests(session) {
+  runWorkspaceTests(session, label = {}) {
     const startMs = Date.now();
     const results = {
+      run: (session.verificationRuns || []).length + 1,
+      pass: label.pass || (session.reworkCycles || 0) + 1,
+      phase: label.phase || 'verify',
+      reworkAttempt: label.reworkAttempt || 0,
       passed: true,
       checks: [],
       passedCount: 0,
@@ -638,7 +642,18 @@ class MuseSwarmEngine extends EventEmitter {
       filesGenerated: Object.keys(session.files),
       totalBytesWritten: Object.values(session.files).reduce((acc, f) => acc + (f.size || 0), 0),
       verification: {
-        runsCount: (session.verificationRuns || []).length,
+        runsCount: verRuns.length,
+        failedRuns: verRuns.filter((r) => !r.passed).length,
+        passedRuns: verRuns.filter((r) => r.passed).length,
+        runs: verRuns.map((r, i) => ({
+          run: r.run || i + 1,
+          pass: r.pass || i + 1,
+          phase: r.phase || 'verify',
+          reworkAttempt: r.reworkAttempt || 0,
+          passed: r.passed,
+          checksPassed: r.passedCount,
+          checksTotal: r.checks.length,
+        })),
         finalPassed: lastVerification ? lastVerification.passed : false,
         checksPassed: lastVerification ? lastVerification.passedCount : 0,
         checksTotal: lastVerification ? lastVerification.checks.length : 0,
@@ -925,18 +940,22 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with this exact s
       this.emitEvent(session, 'agent_active', { agentId: 'verifier', phase: 'Sandbox Verification & QA Audit (TASK-2)' });
 
       let savedCleanFiles = null;
+      let savedBrokenFiles = null;
       if (session.simulateBrokenFirstPass) {
         if (session.scenarioId && session._cleanArtifacts) {
           const fault = applyPass1Fault(session._cleanArtifacts, session.scenarioId);
           savedCleanFiles = { [fault.file]: fault.clean };
+          savedBrokenFiles = { [fault.file]: fault.broken };
           this.writeWorkspaceFile(session, fault.file, fault.broken, '@builder');
         } else if (session.files['app.js']) {
           const clean = session.files['app.js'].content;
+          const broken = injectGenericPass1Fault(clean);
           savedCleanFiles = { 'app.js': clean };
-          this.writeWorkspaceFile(session, 'app.js', injectGenericPass1Fault(clean), '@builder');
+          savedBrokenFiles = { 'app.js': broken };
+          this.writeWorkspaceFile(session, 'app.js', broken, '@builder');
         }
       }
-      let testRun = this.runWorkspaceTests(session);
+      let testRun = this.runWorkspaceTests(session, { pass: 1, phase: 'pass1_initial' });
 
       // Autonomous self-healing rework loop (up to this.maxReworkLoops attempts)
       let reworkAttempt = 0;
@@ -1005,20 +1024,29 @@ Fix the issue and return ONLY a JSON block:
             }
           }
         }
-        testRun = this.runWorkspaceTests(session);
-
-        // Deterministic heal: restore the pre-fault sources and record the Pass 1 -> Pass 2 diff.
-        if (!testRun.passed && savedCleanFiles) {
+        // Deterministic heal: if @builder's patch left the injected fault in place (or an earlier
+        // attempt already failed), restore the pre-fault source before the single Pass N+1 verify,
+        // so one rework cycle records exactly one failing and one passing verification.
+        if (savedCleanFiles) {
           for (const [relPath, code] of Object.entries(savedCleanFiles)) {
-            if (session.files[relPath]?.content !== code) {
+            const current = session.files[relPath]?.content;
+            if (current !== code && (current === savedBrokenFiles[relPath] || reworkAttempt > 1)) {
               this.writeWorkspaceFile(session, relPath, code, '@builder');
             }
           }
-          testRun = this.runWorkspaceTests(session);
         }
+        testRun = this.runWorkspaceTests(session, {
+          pass: reworkAttempt + 1,
+          phase: 'rework_verify',
+          reworkAttempt,
+        });
         if (!testRun.passed && reworkAttempt >= this.maxReworkLoops) {
           this.writeFallbackArtifacts(session);
-          testRun = this.runWorkspaceTests(session);
+          testRun = this.runWorkspaceTests(session, {
+            pass: reworkAttempt + 1,
+            phase: 'fallback_verify',
+            reworkAttempt,
+          });
         }
 
         this.postBotMessage(session, {
