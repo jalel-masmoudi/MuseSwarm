@@ -730,7 +730,7 @@ export function Studio() {
         <div className="mb-2 flex items-baseline justify-between gap-3">
           <h2 className="headline text-sm">Judge scenarios</h2>
           <p className="text-[10px] text-muted-foreground">
-            {scenarioSource === "api" ? "GET /api/scenarios" : "local presets · /api/scenarios not merged yet"} · one
+            {scenarioSource === "api" ? "GET /api/scenarios" : "local presets · API unreachable"} · one
             click launches
           </p>
         </div>
