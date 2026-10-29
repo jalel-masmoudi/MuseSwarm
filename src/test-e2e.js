@@ -4,7 +4,7 @@ const path = require('path');
 const { BasetenMuseClient, computePercentile } = require('./baseten-client');
 const { MuseSwarmEngine, AGENT_PROFILES, extractJsonBlock, SCENARIO_PRESETS, buildReworkDiff } = require('./swarm-engine');
 const { TOOLS } = require('./mcp-server');
-const { server, normalizeAgentId } = require('./server');
+const { server, engine: httpEngine, normalizeAgentId } = require('./server');
 
 async function testBasetenClientTelemetryAndRetry() {
   console.log('\n--- [Suite 1] BasetenMuseClient Telemetry, Percentile & Retry/Timeout Tests ---');
@@ -280,7 +280,16 @@ async function testServerEndpoints() {
     const msgJson = await msgRes.json();
     assert.strictEqual(msgJson.ok, true);
     assert.strictEqual(msgJson.agent.handle, '@architect');
-    console.log('[PASS] 4.3: POST /api/swarm/message normalizes @architect handle and returns reply + reasoning');
+    assert.ok(!msgJson.reply.includes('```json'), 'Conversational @architect steer should be prose, not the JSON spec');
+    assert.ok(!msgJson.reply.includes('kanbanTasks'));
+    const specClient = new BasetenMuseClient({ apiKey: 'offline', allowOfflineFallback: true });
+    const specRes = await specClient.chatCompletion({
+      agentId: 'architect',
+      messages: [{ role: 'user', content: 'User Software Request: "demo"\n\nReturn ONLY a valid JSON object inside a ```json code block' }],
+    });
+    const specJson = extractJsonBlock(specRes.content);
+    assert.ok(specJson && Array.isArray(specJson.kanbanTasks), 'JSON spec prompt must still return the architect plan');
+    console.log('[PASS] 4.3: POST /api/swarm/message normalizes @architect handle and returns a prose steer');
 
     const rwRes = await fetch(`${baseUrl}/api/swarm/rework`, {
       method: 'POST',
@@ -345,35 +354,59 @@ async function testServerEndpoints() {
 async function runFullSwarmE2E() {
   console.log('\n--- [Suite 5] Full End-to-End Multi-Agent Co-Build Session & Artifacts Verification ---');
   const engine = new MuseSwarmEngine();
+  let session = null;
 
-  const session = engine.createSession({
-    prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine with weighted impact/urgency/effort scoring, SLA detector, interactive dark-mode UI (index.html), isomorphic core module (app.js), and unit tests (test.js).',
-    projectName: 'sprint-priority-demo',
-  });
+  try {
+    session = engine.createSession({
+      prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine with weighted impact/urgency/effort scoring, SLA detector, interactive dark-mode UI (index.html), isomorphic core module (app.js), and unit tests (test.js).',
+      projectName: 'sprint-priority-demo',
+    });
 
-  await engine.executeSwarm(session);
+    await engine.executeSwarm(session);
 
-  assert.strictEqual(session.status, 'completed', 'Session should complete');
-  assert.ok(session.messages.length >= 6, 'Should exchange at least 6 bot-to-bot messages');
-  assert.ok(session.files['brief.md'], 'Should generate brief.md');
-  assert.ok(session.files['runbook.md'], 'Should generate runbook.md');
-  assert.ok(session.files['app.js'], 'Should generate app.js');
-  assert.ok(session.files['index.html'], 'Should generate index.html');
-  assert.ok(session.files['test.js'], 'Should generate test.js');
-  assert.ok(session.files['README.md'], 'Should generate README.md');
-  assert.ok(session.files['domain.js'], 'Should generate domain.js for the sprint scenario');
-  assert.ok(session.files['benchmark.json'], 'Should generate benchmark.json');
-  assert.ok(fs.existsSync(path.join(session.workspaceDir, '.session.json')), 'Should persist .session.json snapshot');
+    assert.strictEqual(session.status, 'completed', 'Session should complete');
+    assert.ok(session.messages.length >= 6, 'Should exchange at least 6 bot-to-bot messages');
+    assert.ok(session.files['brief.md'], 'Should generate brief.md');
+    assert.ok(session.files['runbook.md'], 'Should generate runbook.md');
+    assert.ok(session.files['app.js'], 'Should generate app.js');
+    assert.ok(session.files['index.html'], 'Should generate index.html');
+    assert.ok(session.files['test.js'], 'Should generate test.js');
+    assert.ok(session.files['README.md'], 'Should generate README.md');
+    assert.ok(session.files['domain.js'], 'Should generate domain.js for the sprint scenario');
+    assert.ok(session.files['benchmark.json'], 'Should generate benchmark.json');
+    assert.ok(fs.existsSync(path.join(session.workspaceDir, '.session.json')), 'Should persist .session.json snapshot');
 
-  const lastVer = session.verificationRuns[session.verificationRuns.length - 1];
-  assert.ok(lastVer && lastVer.passed, 'Sandbox verification run must pass');
-  assert.ok(session.rubricEvaluation && session.rubricEvaluation.qualityScore >= 85, 'Rubric quality score should be >= 85');
-  assert.strictEqual(TOOLS.length, 4, 'MCP server should expose 4 tools');
+    const lastVer = session.verificationRuns[session.verificationRuns.length - 1];
+    assert.ok(lastVer && lastVer.passed, 'Sandbox verification run must pass');
+    assert.ok(session.rubricEvaluation && session.rubricEvaluation.qualityScore >= 85, 'Rubric quality score should be >= 85');
+    assert.strictEqual(TOOLS.length, 4, 'MCP server should expose 4 tools');
+    console.log('[PASS] 5.1: Full 4-agent workflow (@architect -> @builder -> @verifier -> @lead) & benchmark.json verified');
+    console.log('Rubric Score:', `${session.rubricEvaluation.qualityScore}/100 (${session.rubricEvaluation.verdict})`);
+    console.log('Telemetry:', JSON.stringify(engine.client.getTelemetry()));
 
-  console.log('[PASS] 5.1: Full 4-agent workflow (@architect -> @builder -> @verifier -> @lead) & benchmark.json verified');
-  console.log('Workspace:', session.workspaceDir);
-  console.log('Rubric Score:', `${session.rubricEvaluation.qualityScore}/100 (${session.rubricEvaluation.verdict})`);
-  console.log('Telemetry:', JSON.stringify(engine.client.getTelemetry()));
+    httpEngine.sessions.set(session.id, session);
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const workspaceSlug = path.basename(session.workspaceDir);
+    const slugRes = await fetch(`${baseUrl}/preview/${encodeURIComponent(session.slug)}/index.html`);
+    assert.strictEqual(slugRes.status, 200, `/preview/${session.slug}/index.html should return 200`);
+    for (const key of [session.id, workspaceSlug]) {
+      const previewRes = await fetch(`${baseUrl}/preview/${encodeURIComponent(key)}/index.html`);
+      const previewBody = await previewRes.text();
+      assert.strictEqual(previewRes.status, 200, `/preview/${key}/index.html should return 200`);
+      assert.ok(previewBody.includes('Sprint & Incident Priority'), `/preview/${key}/index.html should serve this workspace`);
+    }
+    console.log(`[PASS] 5.2: /preview/${workspaceSlug}/index.html returns 200`);
+  } finally {
+    if (server.listening) {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    if (session) {
+      httpEngine.sessions.delete(session.id);
+      fs.rmSync(session.workspaceDir, { recursive: true, force: true });
+    }
+  }
+  assert.ok(session && !fs.existsSync(session.workspaceDir), 'Suite 5 must remove its temporary workspace');
 }
 
 async function testScenarioPresetsAndPassDiffs() {
