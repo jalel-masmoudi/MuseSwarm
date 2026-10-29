@@ -1,9 +1,16 @@
 node_modules/
 .env
 .env.local
-# Generated swarm workspaces; only the committed live Baseten reference run is tracked.
+.env.*
+!.env.example
+# Generated swarm workspaces; committed live Baseten reference runs stay tracked.
 workspaces/*
 !workspaces/.gitkeep
 !workspaces/sprint-priority-engine-8z24/
+!workspaces/golden/
+!workspaces/golden/**
+!workspaces/golden-*/
+!workspaces/golden-*/**
 workspaces/*/node_modules/
 *.log
+museswarm-demo-v2.mp4

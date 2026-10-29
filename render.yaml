@@ -1,0 +1,16 @@
+# Render free-tier web service. Docker runtime so the long-lived Node process,
+# SSE stream, and child-process sandbox (`node test.js`) all work.
+# Static UI comes from public/ (museswarm-studio/dist is dockerignored).
+services:
+  - type: web
+    name: museswarm
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: MUSE_SWARM_PUBLIC_DEMO
+        value: "1"
+      - key: PORT
+        value: "4321"
+      - key: NODE_ENV
+        value: production
