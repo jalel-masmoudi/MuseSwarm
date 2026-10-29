@@ -75,7 +75,11 @@ A rework run (`simulateBrokenFirstPass`, or `POST /api/swarm/rework`) injects on
 
 ## Hosted demo
 
-A judge-facing Studio URL is **TBD** (filled in after the first Render/Fly deploy). Until then, run the same mode locally:
+**Live Studio:** [https://museswarm.onrender.com](https://museswarm.onrender.com)
+
+Render free plan (Frankfurt, Docker, `MUSE_SWARM_PUBLIC_DEMO=1`, auto-deploys from `main`). It replays the three golden live sessions and **never calls Baseten**. After idle the free-tier instance may cold-start in about **30–60 seconds**. `GET /api/health` reports `mode: public-demo`.
+
+To run the same mode locally:
 
 ```bash
 MUSE_SWARM_PUBLIC_DEMO=1 npm start
