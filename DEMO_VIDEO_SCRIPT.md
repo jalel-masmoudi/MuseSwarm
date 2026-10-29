@@ -1,57 +1,67 @@
-# MuseSwarm — Official 81-Second Hackathon Demo Video Script
+# MuseSwarm — Official 85-Second Hackathon Demo Video Script (v2)
 
 - **Project:** MuseSwarm — Multi-Agent Bot-to-Bot Software Engineering Platform
 - **Hackathon:** Meta Global AI Developer Hackathon (`$1,000,000` Prize Pool)
 - **Track & Theme:** Indie Developer Track • Theme 2: *Push the Frontier* (Software Challenge)
 - **Model & Inference Stack:** Meta `Muse Spark Open` (`meta-models/muse-spark-open-1026`, 816B total / 42B active MoE, 1M context) on **Baseten** (`https://inference.baseten.co/v1`, up to `2,000,000 TPM`) + **Meta Muse Code CLI** (`AGENTS.md`, `SOUL.md`, `.agents/memory`, `.muse/hooks.json`) + **Cursor IDE MCP Server** (`src/mcp-server.js`).
-- **Output Video Specs:** `1920x1080` (Full HD, 30 fps, H.264 `yuv420p` + AAC 44.1 kHz stereo audio), **81.27 seconds** total across 6 timed scenes.
+- **Output Video:** `museswarm-demo-v2.mp4` — `1920x1080`, 30 fps, H.264 High `yuv420p` + AAC-LC 44.1 kHz stereo, **84.76 seconds** across 6 timed scenes. Each still gets an eased Ken Burns push toward the feature it narrates, a `SCENE 0X / 06` lower third, and a neural TTS voiceover (`en-US-AndrewNeural`, +15% rate).
+- **Capture source:** the new MuseSwarm Studio (judge experience UI) served by `node src/server.js` at `http://localhost:4321`, driven by Playwright through real runs. No `BASETEN_API_KEY` was configured for this capture, so the header reads `DEMO SIMULATION` and every number on screen comes from the backend's deterministic offline run of the same pipeline.
+- **Frames:** `demo-frames/frame1.png` … `demo-frames/frame6.png` (all `1920x1080`). Frames 4 and 6 place two real Inspector / MCP drawer captures from the same run side by side under the Studio header. Frame 5 hides the Peer Agents and Kanban columns and wraps diff lines so the full Pass 1 and Pass 2 lines fit on screen.
 
 ---
 
 ## Scene-by-Scene Breakdown & Exact Voiceover Narration
 
-### Scene 1 — Product Vision & Problem (0:00.0 – 0:13.4 | 13.43s)
-- **Captured Frame:** `demo-frames/frame1_hero.png` — Full `1920x1080` hero view of **MuseSwarm Studio** at `http://localhost:4321` in `LIVE BASETEN` mode, showing the 4 peer bots (`@architect`, `@builder`, `@verifier`, `@lead`), active session `sprint-priority-engine-8z24`, `98/100 VERIFIED_PASS` badge, and the interactive Live App preview.
-- **Lower-Third Overlay:** `SCENE 01 / 06  |  MUSESWARM STUDIO — Multi-Agent Bot-to-Bot Software Co-Builder (Meta Muse Code + Cursor IDE)`
+### Scene 1 — MuseSwarm Studio, Judge Proof Strip & Judge Scenarios (0:00.00 – 0:14.00 | 14.00s)
+- **Captured Frame:** `demo-frames/frame1.png` — Studio landing view: header (`meta-models/muse-spark-open-1026`, `DEMO SIMULATION`, `0 / 2,000,000 TPM`, `MCP Bridge`), the **Judge proof** strip (Meta Global AI Developer Hackathon · Theme 2 · Push the Frontier, Baseten `inference.baseten.co/v1`, per-agent `reasoning_content` slots), and the three **Judge scenarios** cards loaded from `GET /api/scenarios` (Sprint & Incident Priority Engine, Progressive Feature Flag & Canary Rollout Controller, On-Call Rotation & Burnout Fairness Scheduler).
+- **Motion:** 1.00× → 1.12× push toward the proof strip and scenario cards.
+- **Lower-Third Overlay:** `SCENE 01 / 06  |  MUSESWARM STUDIO — Judge Proof Strip + 3 One-Click Judge Scenarios (GET /api/scenarios)`
 - **Spoken Narration:**
-  > "Single-agent coding tools often drift in scope or ship untested code. Meet MuseSwarm: a multi-agent bot-to-bot engineering platform for the Meta Global AI Hackathon, bringing Meta Muse Code architecture to Windows, macOS, Linux, and Cursor IDE."
+  > "Single-agent coding tools drift in scope or ship untested code. Meet MuseSwarm Studio. A judge proof strip pins Muse Spark Open ten-twenty-six on Baseten, and three judge scenarios load from slash API scenarios, one click each."
 
 ---
 
-### Scene 2 — Four Specialized Peer Bots & Session Message Bus (0:13.4 – 0:28.2 | 14.76s)
-- **Captured Frame:** `demo-frames/frame2_session_bus.png` — Peer Agents roster with expanded `SOUL.md` definitions (`@architect`, `@builder`, `@verifier`, `@lead`) and the real-time **Session Bus** displaying `STEER`, `QUEUE`, and `NOTIFY` messages with expanded `reasoning_content` chain-of-thought blocks.
-- **Lower-Third Overlay:** `SCENE 02 / 06  |  BOT-TO-BOT SESSION BUS — @architect, @builder, @verifier & @lead + reasoning_content CoT`
+### Scene 2 — Session Bus, reasoning_content, SOUL.md & Kanban (0:14.00 – 0:27.77 | 13.77s)
+- **Captured Frame:** `demo-frames/frame2.png` — After a one-click Feature Flag run: Peer Agents roster with `@architect`'s `SOUL.md` expanded, the dependency-aware Kanban (`TASK-1` → `TASK-2` → `TASK-3`, all `done`, audit trails), the **Session Bus** (`feature-flag-rollout-*`) showing `STEER`, `QUEUE` and `NOTIFY` handoffs with **Internal reasoning `reasoning_content`** expanded, and the Inspector file list.
+- **Motion:** 1.00× → 1.28× push toward the Session Bus.
+- **Lower-Third Overlay:** `SCENE 02 / 06  |  BOT-TO-BOT SESSION BUS — STEER / QUEUE / NOTIFY • reasoning_content • SOUL.md • Kanban audit`
 - **Spoken Narration:**
-  > "Four peer bots coordinate over a session bus using steer, queue, and notify handoffs. Architect writes brief and runbook dot M D, Builder codes app and test dot J S, Verifier runs sandbox tests, and Lead writes benchmark dot J S O N, surfacing Muse Spark Open reasoning content."
+  > "Four peer bots coordinate over a session bus with steer, queue, and notify handoffs. Every message keeps its reasoning content, each bot shows its soul dot M D, and tasks move across a dependency-aware Kanban board with a full audit trail."
 
 ---
 
-### Scene 3 — Baseten `meta-models/muse-spark-open-1026` & 2M TPM Telemetry (0:28.2 – 0:40.6 | 12.38s)
-- **Captured Frame:** `demo-frames/frame3_baseten_telemetry.png` — Live Baseten telemetry bar (`meta-models/muse-spark-open-1026 · LIVE BASETEN`, `16,916 / 2,000,000 TPM (0.85%)`, `p50 9.2s · p95 18.1s · Reasoning 8,260 · Calls 4 · Retries 0`) and `benchmark.json` artifact inspector (`reworkCycles`, `agentBreakdown`, `/api/health`, `/api/telemetry`, `/api/status`, `/api/events`).
-- **Lower-Third Overlay:** `SCENE 03 / 06  |  BASETEN 2M TPM BACKEND — meta-models/muse-spark-open-1026 • 45s Timeout & Backoff • /api/telemetry`
+### Scene 3 — Baseten 2M TPM Proof Strip with Session Telemetry (0:27.77 – 0:41.80 | 14.03s)
+- **Captured Frame:** `demo-frames/frame3.png` — Proof strip after the Feature Flag run: `1,770 / 2,000,000 TPM`, `rolling 1,770 TPM · 0.09% of budget · reasoning 165 · 4 calls · 0 retries · 0 rework`, `sandbox node --check 3/3 · node test.js PASSED · 12 assertions`, per-agent `reasoning_content` row, header `97/100 VERIFIED_PASS`.
+- **Motion:** 1.00× → 1.18× push onto the proof strip.
+- **Lower-Third Overlay:** `SCENE 03 / 06  |  BASETEN 2M TPM PROOF STRIP — meta-models/muse-spark-open-1026 • node --check 3/3 • node test.js PASSED`
 - **Spoken Narration:**
-  > "Every agent runs live on Meta Muse Spark Open ten-twenty-six on Baseten with a two-million TPM budget, forty-five-second timeouts, exponential backoff, and live telemetry on slash API health, telemetry, status, and SSE events."
+  > "The proof strip tracks each session against the two-million TPM budget: one thousand seven hundred seventy tokens over four calls, zero retries, node check three of three, and node test dot J S passing, straight from session telemetry."
 
 ---
 
-### Scene 4 — Live Web Studio, Kanban DAG & Interactive App Preview (0:40.6 – 0:53.6 | 13.04s)
-- **Captured Frame:** `demo-frames/frame4_kanban_preview.png` — Dependency-aware **Kanban Board** (`TASK-1`, `TASK-2`, `TASK-3` with expanded multi-agent audit trails) alongside the **Inspector** showing `app.js`, `brief.md`, `runbook.md`, `test.js`, and `index.html`.
-- **Lower-Third Overlay:** `SCENE 04 / 06  |  DEPENDENCY-AWARE KANBAN & INSPECTOR — brief.md • runbook.md • app.js • test.js • index.html`
+### Scene 4 — Multi-File Workspace & Live App Preview (0:41.80 – 0:56.47 | 14.67s)
+- **Captured Frame:** `demo-frames/frame4.png` — Two Inspector captures from the Feature Flag run: **Files** (`brief.md`, `runbook.md`, `app.js`, `test.js`, `verify-report.json`, `index.html`, `README.md`, `benchmark.json`, `domain.js`, with `domain.js` open on the FNV-1a hash and `FeatureFlagController`) and **Live App** (the generated *Feature Flag & Canary Rollout* UI: flag, percent, subject, Define / Check bucket / Record success / Record error).
+- **Motion:** 1.00× → 1.10× centered push.
+- **Lower-Third Overlay:** `SCENE 04 / 06  |  MULTI-FILE WORKSPACE — brief.md • runbook.md • domain.js • app.js • test.js • index.html + Live App`
 - **Spoken Narration:**
-  > "At localhost forty-three twenty-one, tasks progress across a dependency-aware Kanban board with full audit history. Developers inspect brief, runbook, app dot J S, test dot J S, and index dot H T M L, and test the live app preview right in the studio."
+  > "One click on the feature-flag rollout scenario builds a real multi-file workspace: brief, runbook, domain dot J S, app dot J S, test dot J S, and index dot H T M L, with the canary rollout app running live in the Inspector."
 
 ---
 
-### Scene 5 — Autonomous Self-Healing Rework Loop (`/api/swarm/rework`) (0:53.6 – 1:07.1 | 13.51s)
-- **Captured Frame:** `demo-frames/frame5_rework_loop.png` — Self-Healing Rework Loop in action: `@verifier → @builder` red **`REWORK`** alert (`runtime:test.js ✗ — AssertionError [ERR_ASSERTION]: false == true` on SLA unit mismatch), internal `reasoning_content` trace, `@builder → @verifier` **`STEER`** patch (`slaHours * 3600e3`), and `test.js` verification suite (`5/5` suites, `8/8` assertions).
-- **Lower-Third Overlay:** `SCENE 05 / 06  |  AUTONOMOUS SELF-HEALING REWORK — /api/swarm/rework • Pass 1 Bug -> Pass 2 5/5 Suites (8/8 Assertions)`
+### Scene 5 — Self-Healing Diff Explorer, Pass 1 → Pass 2 (0:56.47 – 1:09.87 | 13.40s)
+- **Captured Frame:** `demo-frames/frame5.png` — Sprint & Incident Priority Engine after **Simulate Broken Build → Self-Heal**: Session Bus `@verifier → @builder` **REWORK** card with the `node test.js` `AssertionError [ERR_ASSERTION]` stack trace, then `@builder → @verifier` STEER (`Rework #1 complete`). The Inspector **Self-Heal Diff** reads `Pass 1 · REWORK → Pass 2 · VERIFIED_PASS`, source `GET /api/session/:id/diffs · +1 −1`, split view on `domain.js`:
+  - Pass 1 (red): `const slaBreached = elapsedMinutes >= slaMinutes * 60 * 1000; // pass-1 fault: minutes compared as milliseconds`
+  - Pass 2 (green): `const slaBreached = elapsedMinutes >= slaMinutes;`
+- **Motion:** 1.00× → 1.75× push onto the changed `slaBreached` lines.
+- **Lower-Third Overlay:** `SCENE 05 / 06  |  SELF-HEALING DIFF EXPLORER — Pass 1 REWORK -> Pass 2 VERIFIED_PASS • GET /api/session/:id/diffs`
 - **Spoken Narration:**
-  > "Triggering slash API swarm rework injects a Pass-One unit-mismatch bug. Verifier runs Node test dot J S, catches the assertion error, moves Task One to rework, and steers Builder with the stack trace, self-healing all five suites and eight assertions on Pass Two."
+  > "Simulate Broken Build injects a Pass One fault. Verifier catches the assertion error and steers Builder with the stack trace. The Diff Explorer pins the exact line: minutes compared as milliseconds in red, the healed check in green."
 
 ---
 
-### Scene 6 — `98/100 (VERIFIED_PASS)` Rubric, Live Steer & Cursor MCP Server (1:07.1 – 1:21.3 | 14.16s)
-- **Captured Frame:** `demo-frames/frame6_rubric_mcp.png` — 100-Point Verification Rubric (`98/100 VERIFIED_PASS`: Correctness `25/25`, Test Coverage `24/25`, Architecture Adherence `25/25`, UI Completeness `24/25`), green sandbox checks (`syntax:app.js`, `syntax:test.js`, `runtime:test.js`, `artifact:index.html`), live steer (`/api/swarm/message`), CLI, and 4-tool Cursor MCP Server (`src/mcp-server.js`).
-- **Lower-Third Overlay:** `SCENE 06 / 06  |  98/100 VERIFIED_PASS — 16,916 Tokens • 0 Errors • /api/swarm/message • 4-Tool Cursor MCP Server`
+### Scene 6 — 97/100 Verification Rubric & Cursor MCP Bridge (1:09.87 – 1:24.73 | 14.87s)
+- **Captured Frame:** `demo-frames/frame6.png` — Header `5,548 / 2,000,000 TPM · 97/100 VERIFIED_PASS · 1 rework`. Left: Inspector **Verification** (`97/100 VERIFIED_PASS`; `syntax:domain.js`, `syntax:app.js`, `syntax:test.js`, `runtime:test.js`, `artifact:index.html` all pass; `node --check *.js && node test.js` output; Correctness `25/25`, Test Coverage `24/25`, Architecture Adherence `24/25`, UI Completeness `24/25`). Right: **Cursor MCP Bridge** drawer after invoking `muse_swarm_status` — `14 ms · POST /api/mcp/invoke`, the JSON-RPC 2.0 result, and the `.cursor/mcp.json` snippet.
+- **Motion:** 1.00× → 1.14× push toward the MCP drawer.
+- **Lower-Third Overlay:** `SCENE 06 / 06  |  97/100 VERIFIED_PASS • 1 REWORK — Cursor MCP Bridge: muse_swarm_status via POST /api/mcp/invoke (14 ms)`
 - **Spoken Narration:**
-  > "The build scores ninety-eight out of one hundred, Verified Pass, across sixteen thousand nine hundred sixteen tokens with zero errors. With live specialist steering on slash API swarm message, a CLI, and a four-tool Cursor MCP server, MuseSwarm pushes the frontier."
+  > "The build scores ninety-seven out of one hundred, Verified Pass, after one rework cycle. From the Cursor MCP Bridge drawer, muse swarm status answers over slash API M C P invoke in fourteen milliseconds. MuseSwarm pushes the frontier."
