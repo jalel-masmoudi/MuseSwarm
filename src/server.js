@@ -13,6 +13,7 @@ const {
   clientKey,
   buildReplayEvents,
   replayEventsToSse,
+  createDemoWorkspaceGc,
 } = require('./public-demo');
 
 const engine = new MuseSwarmEngine(
@@ -23,6 +24,7 @@ const demoRateLimiter = CONFIG.publicDemo
   ? createRateLimiter({ limit: CONFIG.publicDemoPostLimit, windowMs: CONFIG.publicDemoPostWindowMs })
   : null;
 const sandboxGate = CONFIG.publicDemo ? createConcurrencyGate(CONFIG.publicDemoMaxConcurrent) : null;
+const demoGc = CONFIG.publicDemo ? createDemoWorkspaceGc(engine) : null;
 
 function normalizeAgentId(rawAgent) {
   const cleaned = String(rawAgent || 'architect').trim().replace(/^@+/, '').toLowerCase();
@@ -266,6 +268,7 @@ const server = http.createServer(async (req, res) => {
       telemetry: getEffectiveTelemetry(),
       sessionsCount: sessions.length,
       goldens: goldenCatalog(engine),
+      prunedWorkspaces: demoGc ? demoGc.pruned : 0,
       benchmarks,
     });
   }
@@ -282,6 +285,7 @@ const server = http.createServer(async (req, res) => {
       telemetry: getEffectiveTelemetry(),
       sessions,
       goldens: goldenCatalog(engine),
+      prunedWorkspaces: demoGc ? demoGc.pruned : 0,
       activeSessionId: engine.activeSessionId,
       scenarios: serializeScenarios(),
     });
@@ -356,6 +360,7 @@ const server = http.createServer(async (req, res) => {
       }
       const simulateBrokenFirstPass =
         pathname === '/api/swarm/rework' || Boolean(body.simulateBrokenFirstPass || body.broken);
+      if (demoGc) demoGc.sweep({ reserve: 1 });
       const session = engine.createSession({
         prompt,
         projectName: body.projectName,
@@ -515,16 +520,18 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (require.main === module) {
+  if (demoGc) demoGc.startPeriodic();
   server.listen(CONFIG.port, () => {
     console.log(`\n🚀 MuseSwarm Live Studio running at http://localhost:${CONFIG.port}`);
     console.log(`   Model    : ${CONFIG.modelId}`);
     console.log(`   Endpoint : ${CONFIG.basetenBaseUrl} (2M TPM capacity)`);
     if (CONFIG.publicDemo) {
-      console.log(`   Mode     : public-demo (goldens loaded, live Baseten disabled)\n`);
+      console.log(`   Mode     : public-demo (goldens loaded, live Baseten disabled)`);
+      console.log(`   GC       : max ${CONFIG.publicDemoMaxWorkspaces} ephemeral workspaces, TTL ${CONFIG.publicDemoWorkspaceTtlMs}ms\n`);
     } else {
       console.log('');
     }
   });
 }
 
-module.exports = { server, engine, normalizeAgentId };
+module.exports = { server, engine, normalizeAgentId, demoGc };
