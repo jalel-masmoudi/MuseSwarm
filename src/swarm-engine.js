@@ -1572,12 +1572,19 @@ Return ONLY a valid JSON object inside a \`\`\`json code block:
         (testRun.checks || []).some((c) => c.name === 'independent_grade' && c.passed);
       const honestPass = Boolean(testRun.passed && anyRunPassed && independentOk);
 
+      const verdict = honestPass ? (verifierOut.verdict === 'VERIFIED_FAIL' ? 'VERIFIED_FAIL' : 'VERIFIED_PASS') : 'VERIFIED_FAIL';
+      const failRubric = {
+        correctness: 0,
+        testCoverage: 0,
+        architectureAdherence: rubricEval.breakdown.architectureAdherence,
+        uiCompleteness: rubricEval.breakdown.uiCompleteness,
+      };
       session.rubricEvaluation = {
-        verdict: honestPass ? (verifierOut.verdict === 'VERIFIED_FAIL' ? 'VERIFIED_FAIL' : 'VERIFIED_PASS') : 'VERIFIED_FAIL',
-        qualityScore: Number.isFinite(Number(verifierOut.qualityScore)) && honestPass
-          ? Number(verifierOut.qualityScore)
-          : rubricEval.totalScore,
-        rubric: verifierOut.rubric || rubricEval.breakdown,
+        verdict,
+        qualityScore: verdict === 'VERIFIED_FAIL'
+          ? failRubric.architectureAdherence + failRubric.uiCompleteness
+          : (Number.isFinite(Number(verifierOut.qualityScore)) ? Number(verifierOut.qualityScore) : rubricEval.totalScore),
+        rubric: verdict === 'VERIFIED_FAIL' ? failRubric : (verifierOut.rubric || rubricEval.breakdown),
         invariants: rubricEval.invariants,
       };
 

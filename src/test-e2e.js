@@ -1399,9 +1399,16 @@ const __assert = require('assert');
     assert.ok(sessionG.verificationRuns.every((r) => r.passed === false), 'every verification run failed');
     assert.notStrictEqual(sessionG.rubricEvaluation.verdict, 'VERIFIED_PASS');
     assert.strictEqual(sessionG.rubricEvaluation.verdict, 'VERIFIED_FAIL');
-    assert.ok(sessionG.rubricEvaluation.qualityScore < 97, 'failed runs must not report a passing-looking 97 score');
+    assert.strictEqual(sessionG.rubricEvaluation.rubric.correctness, 0);
+    assert.strictEqual(sessionG.rubricEvaluation.rubric.testCoverage, 0);
+    assert.strictEqual(
+      sessionG.rubricEvaluation.qualityScore,
+      sessionG.rubricEvaluation.rubric.architectureAdherence + sessionG.rubricEvaluation.rubric.uiCompleteness
+    );
+    assert.ok(sessionG.rubricEvaluation.qualityScore <= 50, 'VERIFIED_FAIL must not show a passing-looking score');
     const benchG = JSON.parse(sessionG.files['benchmark.json'].content);
     assert.notStrictEqual(benchG.rubric?.verdict, 'VERIFIED_PASS');
+    assert.ok(benchG.rubric?.qualityScore <= 50);
     console.log('[PASS] 10.6: all-failed verification runs never yield VERIFIED_PASS');
   } finally {
     fs.rmSync(sessionG.workspaceDir, { recursive: true, force: true });
