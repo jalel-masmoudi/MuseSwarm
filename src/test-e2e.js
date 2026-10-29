@@ -1,12 +1,19 @@
+// Force simulated replies for this process even if a .env BASETEN_API_KEY is present.
+// Tests that pass apiKey + fetchImpl still exercise the live HTTP path with mocks.
+process.env.MUSE_SWARM_OFFLINE = '1';
+
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
+const { CONFIG } = require('./config');
 const { BasetenMuseClient, computePercentile } = require('./baseten-client');
 const { MuseSwarmEngine, AGENT_PROFILES, extractJsonBlock, SCENARIO_PRESETS, buildReworkDiff } = require('./swarm-engine');
 const { TOOLS } = require('./mcp-server');
 const { server, engine: httpEngine, normalizeAgentId } = require('./server');
 const { extractFilePatch } = require('./reply-parser');
-const { buildScenarioArtifacts, applyPass1Fault } = require('./scenarios');
+const { buildScenarioArtifacts, applyPass1Fault, applyOnCallAscendingBusiestFault } = require('./scenarios');
 
 async function testBasetenClientTelemetryAndRetry() {
   console.log('\n--- [Suite 1] BasetenMuseClient Telemetry, Percentile & Retry/Timeout Tests ---');
@@ -86,6 +93,58 @@ async function testBasetenClientTelemetryAndRetry() {
   assert.strictEqual(tel.totalReasoningTokens, 80, 'Should track reasoning tokens');
   assert.strictEqual(tel.agentBreakdown.architect.calls, 1, 'Per-agent breakdown should record architect call');
   console.log('[PASS] 1.2: Retry/backoff on HTTP 429 & 503 + reasoning_content & 2M TPM rolling telemetry');
+
+  const bodies = [];
+  const effortFetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    bodies.push(body);
+    if (body.reasoning_effort) {
+      return {
+        ok: false,
+        status: 400,
+        headers: { get: () => null },
+        text: async () => 'Unknown parameter: reasoning_effort',
+      };
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        id: 'ok-no-effort',
+        choices: [{ finish_reason: 'stop', message: { content: 'ok' } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }),
+    };
+  };
+  const effortClient = new BasetenMuseClient({
+    apiKey: 'test_baseten_valid_key_12345',
+    maxRetries: 2,
+    retryBaseDelayMs: 5,
+    fetchImpl: effortFetch,
+  });
+  const effortRes = await effortClient.chatCompletion({
+    agentId: 'lead',
+    messages: [{ role: 'user', content: 'short release' }],
+    reasoningEffort: 'low',
+  });
+  assert.strictEqual(bodies[0].reasoning_effort, 'low');
+  assert.ok(!Object.prototype.hasOwnProperty.call(bodies[1], 'reasoning_effort'));
+  assert.strictEqual(effortRes.content, 'ok');
+  assert.strictEqual(effortClient.reasoningEffortUnsupported, true);
+  console.log('[PASS] 1.3: reasoning_effort is sent, then dropped for the rest of the run on a 400');
+
+  const snapClient = new BasetenMuseClient({ apiKey: '', allowOfflineFallback: true, offline: true });
+  const snapA = snapClient.snapshotUsage();
+  await snapClient.chatCompletion({ agentId: 'verifier', messages: [{ role: 'user', content: 'a' }] });
+  const mid = snapClient.telemetrySince(snapA);
+  const snapB = snapClient.snapshotUsage();
+  await snapClient.chatCompletion({ agentId: 'verifier', messages: [{ role: 'user', content: 'b' }] });
+  const second = snapClient.telemetrySince(snapB);
+  const all = snapClient.getTelemetry();
+  assert.strictEqual(mid.totalCalls, 1);
+  assert.strictEqual(second.totalCalls, 1);
+  assert.strictEqual(all.totalCalls, 2);
+  assert.strictEqual(second.agentBreakdown.verifier.calls, 1);
+  console.log('[PASS] 1.4: telemetrySince scopes calls to the snapshot window');
 }
 
 async function testMessageBusAndKanbanDependencies() {
@@ -568,7 +627,7 @@ function mockLiveBuilder(engine, makeFix) {
 }
 
 async function runSprintHeal(makeFix) {
-  const engine = new MuseSwarmEngine();
+  const engine = new MuseSwarmEngine({ offline: true, allowOfflineFallback: true });
   const events = [];
   engine.on('event', (ev) => events.push(ev));
   const prompts = makeFix ? mockLiveBuilder(engine, makeFix) : null;
@@ -594,6 +653,41 @@ async function testReworkAttribution() {
   const sources = (s, file) => s.fileHistory[file].map((h) => `${h.author}:${h.source}`);
 
   // Offline: no model patch, engine restores, never labelled 'model'.
+  const prevKey = process.env.BASETEN_API_KEY;
+  const prevMeta = process.env.META_API_KEY;
+  process.env.BASETEN_API_KEY = 'sk-live-key-must-not-be-used-0123456789abcdef';
+  process.env.META_API_KEY = 'sk-live-key-must-not-be-used-0123456789abcdef';
+  let fetches = 0;
+  const guarded = new MuseSwarmEngine({
+    offline: true,
+    allowOfflineFallback: true,
+    fetchImpl: async () => {
+      fetches += 1;
+      throw new Error('offline-asserting test must not call the network');
+    },
+  });
+  const guardedEvents = [];
+  guarded.on('event', (ev) => guardedEvents.push(ev));
+  const guardedSession = guarded.createSession({
+    prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+    scenarioId: 'sprint-priority-engine',
+    projectName: 'offline-key-guard',
+    simulateBrokenFirstPass: true,
+  });
+  try {
+    await guarded.executeSwarm(guardedSession);
+    assert.strictEqual(fetches, 0, 'offline-asserting tests must not hit Baseten even when a key is in env');
+    assert.ok(guarded.client.forceOffline);
+    assert.strictEqual(JSON.parse(guardedSession.files['benchmark.json'].content).healedBy[0], 'deterministic_restore');
+    assert.ok(guardedEvents.every((e) => e.eventType !== 'llm_complete' || e.simulated === true));
+  } finally {
+    fs.rmSync(guardedSession.workspaceDir, { recursive: true, force: true });
+    if (prevKey === undefined) delete process.env.BASETEN_API_KEY;
+    else process.env.BASETEN_API_KEY = prevKey;
+    if (prevMeta === undefined) delete process.env.META_API_KEY;
+    else process.env.META_API_KEY = prevMeta;
+  }
+
   const offline = await runSprintHeal(null);
   assert.deepStrictEqual(phases(offline.session), [['pass1_initial', false], ['rework_verify', true]]);
   assert.deepStrictEqual(sources(offline.session, 'domain.js'), ['engine:scenario_fixture', 'engine:fault_injection', 'engine:deterministic_restore']);
@@ -654,6 +748,167 @@ async function testReworkAttribution() {
   console.log('[PASS] 7.5: a failing model patch is labelled, then replaced by deterministic_restore');
 }
 
+function runNodeTestJs(dir) {
+  const result = spawnSync(process.execPath, ['test.js'], {
+    cwd: dir,
+    encoding: 'utf8',
+    timeout: 15000,
+  });
+  return {
+    passed: result.status === 0,
+    stdout: String(result.stdout || ''),
+    stderr: String(result.stderr || ''),
+  };
+}
+
+function materializeOnCall(domainJs) {
+  const artifacts = buildScenarioArtifacts('oncall-fairness-scheduler');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'museswarm-oncall-'));
+  for (const name of ['domain.js', 'app.js', 'test.js']) {
+    fs.writeFileSync(path.join(dir, name), name === 'domain.js' ? domainJs : artifacts[name], 'utf8');
+  }
+  return dir;
+}
+
+function testOnCallFairnessDirection() {
+  console.log('\n--- [Suite 8] oncall-fairness-scheduler busiest/quietest direction ---');
+  const artifacts = buildScenarioArtifacts('oncall-fairness-scheduler');
+  const fault = applyPass1Fault(artifacts, 'oncall-fairness-scheduler');
+  const inverted = applyOnCallAscendingBusiestFault(artifacts['domain.js']);
+  assert.ok(inverted.includes('this.loadOf(a.id) - this.loadOf(b.id)'));
+  assert.ok(!inverted.includes('this.engineers.slice().sort((a, b) => this.loadOf(b.id) - this.loadOf(a.id)'));
+
+  const cleanDir = materializeOnCall(artifacts['domain.js']);
+  const tzDir = materializeOnCall(fault.broken);
+  const ascDir = materializeOnCall(inverted);
+  try {
+    const clean = runNodeTestJs(cleanDir);
+    assert.ok(clean.passed, `clean oncall fixture must pass:\n${clean.stderr}\n${clean.stdout}`);
+    assert.ok(clean.stdout.includes('rebalance moves load from the busiest engineer to the quietest'));
+    console.log('[PASS] 8.1: clean oncall fixture identifies bao as busiest, chi as quietest, and moves bao -> chi');
+
+    const tz = runNodeTestJs(tzDir);
+    assert.ok(!tz.passed, 'injected timezone fault must still fail node test.js');
+    console.log('[PASS] 8.2: injected timezone pass-1 fault still fails the oncall tests');
+
+    const asc = runNodeTestJs(ascDir);
+    assert.ok(!asc.passed, "ascending sort + ranked[0] as busiest must fail");
+    assert.ok(
+      /busiest|quietest|bao|chi/.test(`${asc.stdout}\n${asc.stderr}`),
+      'ascending variant should fail the busiest/quietest assertions'
+    );
+    console.log('[PASS] 8.3: ascending sort but busiest = ranked[0] fails (inverted rebalance)');
+  } finally {
+    fs.rmSync(cleanDir, { recursive: true, force: true });
+    fs.rmSync(tzDir, { recursive: true, force: true });
+    fs.rmSync(ascDir, { recursive: true, force: true });
+  }
+}
+
+async function testLeadRetryBuilderBudgetAndSessionTelemetry() {
+  console.log('\n--- [Suite 9] @lead retry, @builder build budget, per-session telemetry ---');
+  const engine = new MuseSwarmEngine({ offline: true, allowOfflineFallback: true });
+  const original = engine.client.chatCompletion.bind(engine.client);
+  let leadCalls = 0;
+  let builderBuildCalls = 0;
+  engine.client.chatCompletion = async (opts) => {
+    const user = opts.messages[opts.messages.length - 1].content;
+    if (opts.agentId === 'architect') {
+      assert.strictEqual(opts.timeoutMs, CONFIG.longRequestTimeoutMs, 'architect long timeout');
+    }
+    if (opts.agentId === 'builder' && !user.includes('Rework Attempt #')) {
+      builderBuildCalls += 1;
+      assert.strictEqual(opts.maxTokens, 16000);
+      assert.strictEqual(opts.timeoutMs, CONFIG.longRequestTimeoutMs);
+      assert.strictEqual(opts.reasoningEffort, 'low');
+      assert.ok(/"files":\s*\[/.test(user), 'initial build prompt asks for a files array');
+    }
+    if (opts.agentId === 'lead') {
+      leadCalls += 1;
+      assert.strictEqual(opts.maxTokens, 16000);
+      assert.strictEqual(opts.timeoutMs, CONFIG.longRequestTimeoutMs);
+      assert.strictEqual(opts.reasoningEffort, 'low');
+      if (leadCalls === 1) {
+        assert.ok(!user.includes('ran out of tokens'));
+        return {
+          id: 'lead-truncated',
+          model: 'meta-models/muse-spark-open-1026',
+          simulated: false,
+          content: '',
+          reasoningContent: 'deliberating on the release note '.repeat(400),
+          finishReason: 'length',
+          usage: { promptTokens: 800, completionTokens: 12000, totalTokens: 12800, reasoningTokens: 11800 },
+          latencyMs: 4000,
+        };
+      }
+      assert.ok(user.includes('ran out of tokens'));
+      return {
+        id: 'lead-retry',
+        model: 'meta-models/muse-spark-open-1026',
+        simulated: false,
+        content: JSON.stringify({
+          readmeMd: '# From @lead\n\nShort structured release note.\n',
+          finalBroadcast: '@all Architect, builder, verifier, and lead finished the sprint engine.',
+        }),
+        reasoningContent: '',
+        finishReason: 'stop',
+        usage: { promptTokens: 400, completionTokens: 200, totalTokens: 600, reasoningTokens: 20 },
+        latencyMs: 900,
+      };
+    }
+    return original(opts);
+  };
+
+  const session = engine.createSession({
+    prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+    scenarioId: 'sprint-priority-engine',
+    projectName: 'lead-retry',
+  });
+  try {
+    await engine.executeSwarm(session);
+    assert.strictEqual(leadCalls, 2, '@lead should retry once after empty length');
+    assert.ok(builderBuildCalls >= 1);
+    const release = session.modelReplies.find((r) => r.phase === 'release');
+    const retry = session.modelReplies.find((r) => r.phase === 'release_retry');
+    assert.ok(release && release.finishReason === 'length' && release.parse.retryReason === 'finish_reason_length_empty_content');
+    assert.ok(retry && retry.parse.retryOf === 'release' && retry.content.includes('From @lead'));
+    assert.strictEqual(session.files['README.md'].author, '@lead');
+    assert.strictEqual(session.files['README.md'].source, 'model');
+    assert.ok(session.files['README.md'].content.includes('From @lead'));
+    console.log('[PASS] 9.1: @lead retries once on finishReason=length with empty content and records both replies');
+    console.log('[PASS] 9.2: @builder initial build uses 16000 tokens, reasoning_effort=low, 120s timeout, compact files array');
+  } finally {
+    fs.rmSync(session.workspaceDir, { recursive: true, force: true });
+  }
+
+  const telEngine = new MuseSwarmEngine({ offline: true, allowOfflineFallback: true });
+  const runOnce = async (name) => {
+    const s = telEngine.createSession({
+      prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+      projectName: name,
+    });
+    try {
+      await telEngine.executeSwarm(s);
+      return JSON.parse(s.files['benchmark.json'].content);
+    } finally {
+      fs.rmSync(s.workspaceDir, { recursive: true, force: true });
+    }
+  };
+  const first = await runOnce('tel-session-a');
+  const second = await runOnce('tel-session-b');
+  const processTel = telEngine.client.getTelemetry();
+  assert.ok(first.telemetry.totalCalls > 0 && second.telemetry.totalCalls > 0);
+  assert.strictEqual(first.telemetry.totalCalls, second.telemetry.totalCalls, 'each session should report its own call count');
+  assert.strictEqual(
+    processTel.totalCalls,
+    first.telemetry.totalCalls + second.telemetry.totalCalls,
+    'process-wide totals remain the sum of both sessions'
+  );
+  assert.notStrictEqual(second.telemetry.totalCalls, processTel.totalCalls);
+  assert.ok(first.telemetry.p50LatencyMs > 0 && second.telemetry.p50LatencyMs > 0);
+  console.log('[PASS] 9.3: back-to-back sessions scope telemetry in benchmark.json; process totals stay separate');
+}
+
 async function main() {
   console.log('=== MuseSwarm Engineering Test & Verification Suite ===');
   await testBasetenClientTelemetryAndRetry();
@@ -664,6 +919,8 @@ async function main() {
   await testScenarioPresetsAndPassDiffs();
   testReplyParserShapes();
   await testReworkAttribution();
+  testOnCallFairnessDirection();
+  await testLeadRetryBuilderBudgetAndSessionTelemetry();
   console.log('\n✔ ALL UNIT, API & E2E ASSERTIONS PASSED!');
 }
 
