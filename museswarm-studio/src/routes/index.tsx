@@ -496,12 +496,17 @@ export function Studio() {
   const previewHtml = useMemo(() => {
     const rawHtml = files["index.html"] || "";
     const rawApp = files["app.js"] || files["solution.js"] || "";
+    const rawDomain = files["domain.js"] || "";
     if (!rawHtml) return "<p style='font-family:sans-serif;padding:24px'>No index.html in this workspace yet.</p>";
-    if (rawHtml.includes("__APP__")) return rawHtml.replace("__APP__", rawApp);
-    if (rawHtml.includes('<script src="app.js"></script>')) {
-      return rawHtml.replace('<script src="app.js"></script>', `<script>\n${rawApp}\n</script>`);
-    }
-    return rawHtml;
+    let html = rawHtml.includes("__APP__") ? rawHtml.replace("__APP__", rawApp) : rawHtml;
+    const inline = (name: string, source: string) => {
+      const tag = `<script src="${name}"></script>`;
+      if (!source || !html.includes(tag)) return;
+      html = html.replace(tag, `<script>\n${source.replaceAll("</script>", "<\\/script>")}\n</script>`);
+    };
+    inline("domain.js", rawDomain);
+    inline("app.js", rawApp);
+    return html;
   }, [files]);
 
   async function run(broken: boolean, picked?: Scenario) {
@@ -598,7 +603,7 @@ export function Studio() {
       }
       if (step.msg) setMessages((ms) => [...ms, step.msg!]);
     }
-    if (broken && scenario.expectsRework) {
+    if (broken && scenario.pass1) {
       setReworkCycles(1);
       setFailNote("Pass 1 REWORK → Pass 2 VERIFIED_PASS");
     }
