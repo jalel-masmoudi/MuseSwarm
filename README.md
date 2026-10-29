@@ -106,3 +106,6 @@ That is the honest **2-of-3** live-heal claim (sprint + flags by Muse Spark; onc
 **Static UI choice:** `.dockerignore` excludes `museswarm-studio/dist`, `node_modules`, `.env*`, and generated workspaces (goldens are kept). `server.js` serves `museswarm-studio/dist` *before* `public/` when dist exists; without dist the image serves `public/`, which the Studio bundle PR rebuilds. We chose this over a Docker multi-stage Studio build so this PR never ships a stale Vite bundle and never edits `museswarm-studio/**` or `public/**`.
 
 **Why not Vercel / serverless:** the dashboard is a long-lived Node process. It holds SSE connections, writes `workspaces/`, and spawns `node --check` / `node test.js` child processes with timeouts. Serverless request limits and a read-only filesystem are a poor fit, so this repo ships Docker + Render/Fly instead of a `vercel.json`.
+
+## License
+MIT, see LICENSE.
