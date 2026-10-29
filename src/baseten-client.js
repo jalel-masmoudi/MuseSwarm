@@ -25,6 +25,14 @@ class BasetenMuseClient {
     this.allowOfflineFallback =
       options.allowOfflineFallback !== undefined ? options.allowOfflineFallback : CONFIG.allowOfflineFallback;
     this.fetchImpl = options.fetchImpl || globalThis.fetch;
+    // Simulated replies only, even if BASETEN_API_KEY is in the env or .env. An explicit apiKey or
+    // fetchImpl opts out of the MUSE_SWARM_OFFLINE env switch so mocked-HTTP tests still exercise the live path.
+    this.forceOffline =
+      options.offline !== undefined
+        ? Boolean(options.offline)
+        : options.apiKey === undefined && !options.fetchImpl && process.env.MUSE_SWARM_OFFLINE === '1';
+    if (this.forceOffline) this.apiKey = '';
+    this.reasoningEffortUnsupported = false;
 
     // Telemetry state
     this.tokenWindow = []; // [{ timestamp, totalTokens, promptTokens, completionTokens, reasoningTokens, cachedTokens, latencyMs, agentId }]
@@ -146,6 +154,73 @@ class BasetenMuseClient {
       agentBreakdown: this.agentBreakdown,
       hasApiKey,
       mode: hasApiKey ? 'live-baseten' : (this.allowOfflineFallback ? 'offline-deterministic-fallback' : 'unconfigured'),
+    };
+  }
+
+  // Point-in-time counters so a session can subtract process-wide totals later.
+  snapshotUsage() {
+    return {
+      totalCalls: this.totalCalls,
+      simulatedCalls: this.simulatedCalls,
+      totalTokensUsed: this.totalTokensUsed,
+      totalPromptTokens: this.totalPromptTokens,
+      totalCompletionTokens: this.totalCompletionTokens,
+      totalReasoningTokens: this.totalReasoningTokens,
+      totalCachedTokens: this.totalCachedTokens,
+      totalLatencyMs: this.totalLatencyMs,
+      retryCount: this.retryCount,
+      errorCount: this.errorCount,
+      latencyIndex: this.latencies.length,
+      agentBreakdown: Object.fromEntries(
+        Object.entries(this.agentBreakdown).map(([id, row]) => [id, { ...row }])
+      ),
+    };
+  }
+
+  telemetrySince(snap) {
+    const global = this.getTelemetry();
+    if (!snap) return global;
+    const latencies = this.latencies.slice(snap.latencyIndex);
+    const sorted = [...latencies].sort((a, b) => a - b);
+    const totalCalls = this.totalCalls - snap.totalCalls;
+    const simulatedCalls = this.simulatedCalls - snap.simulatedCalls;
+    const totalLatencyMs = this.totalLatencyMs - snap.totalLatencyMs;
+    const agentBreakdown = {};
+    for (const [id, cur] of Object.entries(this.agentBreakdown)) {
+      const prev = snap.agentBreakdown[id] || { calls: 0, totalTokens: 0, reasoningTokens: 0, totalLatencyMs: 0 };
+      const delta = {
+        calls: cur.calls - prev.calls,
+        totalTokens: cur.totalTokens - prev.totalTokens,
+        reasoningTokens: cur.reasoningTokens - prev.reasoningTokens,
+        totalLatencyMs: cur.totalLatencyMs - prev.totalLatencyMs,
+      };
+      if (delta.calls > 0) agentBreakdown[id] = delta;
+    }
+    return {
+      modelId: global.modelId,
+      endpoint: global.endpoint,
+      tpmLimit: global.tpmLimit,
+      currentTpm: global.currentTpm,
+      currentRpm: global.currentRpm,
+      tpmUtilizationPct: global.tpmUtilizationPct,
+      totalCalls,
+      simulatedCalls,
+      liveCalls: totalCalls - simulatedCalls,
+      totalTokensUsed: this.totalTokensUsed - snap.totalTokensUsed,
+      totalPromptTokens: this.totalPromptTokens - snap.totalPromptTokens,
+      totalCompletionTokens: this.totalCompletionTokens - snap.totalCompletionTokens,
+      totalReasoningTokens: this.totalReasoningTokens - snap.totalReasoningTokens,
+      totalCachedTokens: this.totalCachedTokens - snap.totalCachedTokens,
+      avgLatencyMs: totalCalls > 0 ? Math.round(totalLatencyMs / totalCalls) : 0,
+      p50LatencyMs: computePercentile(sorted, 50),
+      p95LatencyMs: computePercentile(sorted, 95),
+      minLatencyMs: sorted.length > 0 ? Math.round(sorted[0]) : 0,
+      maxLatencyMs: sorted.length > 0 ? Math.round(sorted[sorted.length - 1]) : 0,
+      retryCount: this.retryCount - snap.retryCount,
+      errorCount: this.errorCount - snap.errorCount,
+      agentBreakdown,
+      hasApiKey: global.hasApiKey,
+      mode: global.mode,
     };
   }
 
@@ -293,16 +368,18 @@ class BasetenMuseClient {
     agentId = 'system',
     onProgress = null,
     timeoutMs = null,
+    reasoningEffort = null,
   }) {
     // Re-check env in case .env was populated after startup
-    if (!this.apiKey || this.apiKey === 'your_baseten_api_key_here') {
+    if (!this.forceOffline && (!this.apiKey || this.apiKey === 'your_baseten_api_key_here')) {
       loadEnv();
       if (process.env.BASETEN_API_KEY && process.env.BASETEN_API_KEY !== 'your_baseten_api_key_here') {
         this.apiKey = process.env.BASETEN_API_KEY;
       }
     }
 
-    const hasValidKey = Boolean(this.apiKey && this.apiKey.length > 8 && this.apiKey !== 'your_baseten_api_key_here');
+    const hasValidKey =
+      !this.forceOffline && Boolean(this.apiKey && this.apiKey.length > 8 && this.apiKey !== 'your_baseten_api_key_here');
 
     if (!hasValidKey) {
       if (this.allowOfflineFallback) {
@@ -338,6 +415,7 @@ class BasetenMuseClient {
       max_tokens: maxTokens,
       temperature,
     };
+    if (reasoningEffort && !this.reasoningEffortUnsupported) body.reasoning_effort = reasoningEffort;
 
     if (onProgress) {
       onProgress({ type: 'llm_start', agentId, model: this.modelId, timestamp: startTime });
@@ -367,6 +445,13 @@ class BasetenMuseClient {
           const errText = await res.text();
           const status = res.status;
           const isRetryable = status === 408 || status === 429 || (status >= 500 && status <= 599);
+          if (status === 400 && body.reasoning_effort && /reasoning/i.test(errText)) {
+            // Endpoint rejects reasoning_effort for this model: drop it for the rest of the run and resend.
+            delete body.reasoning_effort;
+            this.reasoningEffortUnsupported = true;
+            attempt -= 1;
+            continue;
+          }
           const err = new Error(`Baseten HTTP ${status}: ${errText.slice(0, 300)}`);
           err.status = status;
           err.retryable = isRetryable;
@@ -413,6 +498,7 @@ class BasetenMuseClient {
           content,
           reasoningContent,
           finishReason: choice.finish_reason,
+          reasoningEffort: body.reasoning_effort || null,
           usage: {
             promptTokens: usage.prompt_tokens || 0,
             completionTokens: usage.completion_tokens || 0,
