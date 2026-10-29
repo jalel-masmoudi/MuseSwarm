@@ -359,14 +359,16 @@ export function McpBridge({
   brief,
   scenarioId,
   sessionId,
+  simulateBrokenFirstPass,
 }: {
   brief: string;
   scenarioId: string;
   sessionId: string | null;
+  simulateBrokenFirstPass: boolean;
 }) {
   const [tool, setTool] = useState(MCP_TOOLS[0]!.name);
   const [agent, setAgent] = useState<AgentId>("architect");
-  const [message, setMessage] = useState("Status of the self-heal loop?");
+  const [message, setMessage] = useState("What should @verifier re-check after the lost-update patch?");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ latencyMs: number; via: string; body: unknown } | null>(null);
   const [error, setError] = useState("");
@@ -376,11 +378,16 @@ export function McpBridge({
     setBusy(true);
     setError("");
     const args: Record<string, unknown> =
-      tool === "muse_swarm_status"
-        ? {}
-        : tool === "muse_swarm_steer"
-          ? { agent, message, sessionId }
-          : { brief, scenarioId, projectName: scenarioId, sessionId };
+      tool === "muse_swarm_ask_agent"
+        ? { agent, message }
+        : tool === "muse_swarm_cobuild"
+          ? {
+              prompt: brief,
+              projectName: scenarioId,
+              scenarioId,
+              simulateBrokenFirstPass,
+            }
+          : {};
     try {
       const out = await invokeMcpTool(tool, args, sessionId);
       setResult(out);
@@ -428,7 +435,7 @@ export function McpBridge({
           {JSON.stringify(spec.inputSchema, null, 2)}
         </pre>
       </div>
-      {tool === "muse_swarm_steer" && (
+      {tool === "muse_swarm_ask_agent" && (
         <div className="space-y-2">
           <div className="flex gap-1">
             {(["architect", "builder", "verifier", "lead"] as AgentId[]).map((id) => (
@@ -449,14 +456,19 @@ export function McpBridge({
           />
         </div>
       )}
-      {(tool === "muse_swarm_run" || tool === "muse_swarm_rework") && (
+      {tool === "muse_swarm_cobuild" && (
         <p className="rounded-xl bg-card/50 px-3 py-2 font-mono text-[10px] text-muted-foreground">
-          scenarioId={scenarioId || "—"} · brief uses the prompt above
+          prompt = brief above · projectName={scenarioId || "—"} · scenarioId={scenarioId || "—"} ·
+          simulateBrokenFirstPass={String(simulateBrokenFirstPass)}
         </p>
       )}
       <div className="flex items-center gap-2">
         <button
-          disabled={busy || ((tool === "muse_swarm_run" || tool === "muse_swarm_rework") && !brief.trim())}
+          disabled={
+            busy ||
+            (tool === "muse_swarm_cobuild" && !brief.trim()) ||
+            (tool === "muse_swarm_ask_agent" && !message.trim())
+          }
           onClick={invoke}
           className="rounded-full bg-primary px-4 py-2 text-xs font-medium text-primary-foreground disabled:opacity-50"
         >
