@@ -14,6 +14,7 @@ import { diffChanged, hasLineDiff, type ReworkFileDiff } from "@/lib/workspace";
 const PIN = [
   "brief.md",
   "runbook.md",
+  "domain.js",
   "solution.js",
   "token-bucket.js",
   "circuit-breaker.js",
