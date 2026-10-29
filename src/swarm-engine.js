@@ -923,6 +923,8 @@ class MuseSwarmEngine extends EventEmitter {
 
   saveSessionSnapshot(session) {
     if (!session || !session.workspaceDir) return;
+    const dirName = path.basename(session.workspaceDir);
+    if (session.golden || session.readOnly || dirName.startsWith('golden-')) return;
     try {
       const serialized = this.serializeSession(session);
       fs.writeFileSync(
@@ -1925,7 +1927,11 @@ console.log('ALL 5 TESTS PASSED SUCCESSFULLY.');
       fileHistory: session.fileHistory || {},
       reworkDiffs: session.reworkDiffs || [],
       reworkSummary: session.reworkSummary || [],
-      healedBy: (session.reworkSummary || []).map((c) => c.healedBy),
+      healedBy: Array.isArray(session.healedBy) && session.healedBy.length
+        ? session.healedBy
+        : (session.reworkSummary || []).map((c) => c.healedBy),
+      golden: Boolean(session.golden),
+      readOnly: Boolean(session.readOnly),
       modelReplies: session.modelReplies || [],
       verificationRuns: session.verificationRuns,
       parallelTasksRun: session.parallelTasksRun || [],

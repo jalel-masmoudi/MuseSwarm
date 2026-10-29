@@ -1,0 +1,374 @@
+{
+  "sprint-priority-engine": {
+    "sessionId": "swarm-mvti4gn7-bvy7",
+    "status": "completed",
+    "score": 98,
+    "verdict": "VERIFIED_PASS",
+    "verificationRuns": [
+      "#1 pass1_initial: FAIL",
+      "#2 rework_verify[model]: PASS"
+    ],
+    "healedBy": [
+      "model"
+    ],
+    "reworkSummary": [
+      {
+        "targetFiles": [
+          "domain.js"
+        ],
+        "modelPatch": "passed",
+        "filesPatchedByModel": [
+          "domain.js"
+        ],
+        "healedBy": "model"
+      }
+    ],
+    "fileHistory": {
+      "brief.md": [
+        "engine:scenario_fixture"
+      ],
+      "runbook.md": [
+        "engine:scenario_fixture"
+      ],
+      "app.js": [
+        "@builder:rejected_contract",
+        "engine:scenario_fixture"
+      ],
+      "index.html": [
+        "@builder:model"
+      ],
+      "domain.js": [
+        "engine:scenario_fixture",
+        "engine:fault_injection",
+        "@builder:model"
+      ],
+      "test.js": [
+        "engine:scenario_fixture"
+      ],
+      "README.md": [
+        "@lead:model"
+      ],
+      "benchmark.json": [
+        "engine:engine_summary"
+      ]
+    },
+    "modelTouchedNonDomainFiles": [
+      "index.html",
+      "README.md"
+    ],
+    "modelWroteDomain": 1,
+    "rejectedProtectedWrites": [
+      "app.js: rejected_contract by @builder (1625B)"
+    ],
+    "finalVsFixture": {
+      "app.js": "identical",
+      "test.js": "identical",
+      "index.html": "DIFFERENT",
+      "domain.js": "identical"
+    },
+    "faultLinePresentInHealedDomain": false,
+    "domainEqualsCleanFixture": true,
+    "grades": {
+      "fixturesPlusHealedDomain": "PASS",
+      "fixtureTestVsShippedFiles": "PASS",
+      "sanity_faultyDomainFailsFixtureTest": "FAIL(exit 1)"
+    },
+    "lead": [
+      {
+        "phase": "release",
+        "simulated": false,
+        "finishReason": "stop"
+      }
+    ],
+    "builderBuild": [
+      {
+        "phase": "build",
+        "simulated": false,
+        "finishReason": "stop",
+        "files": [
+          "app.js",
+          "index.html"
+        ]
+      }
+    ],
+    "builderRework": [
+      {
+        "phase": "rework_fix",
+        "simulated": false,
+        "finishReason": "stop",
+        "files": [
+          "domain.js"
+        ]
+      }
+    ],
+    "architect": [
+      {
+        "phase": "architecture",
+        "simulated": false,
+        "finishReason": "length"
+      }
+    ],
+    "sessionTelemetry": {
+      "totalCalls": 5,
+      "liveCalls": 5,
+      "simulatedCalls": 0,
+      "totalTokensUsed": 16669,
+      "errors": 0,
+      "retries": 0
+    }
+  },
+  "feature-flag-rollout": {
+    "sessionId": "swarm-mvti5hti-fxhd",
+    "status": "completed",
+    "score": 98,
+    "verdict": "VERIFIED_PASS",
+    "verificationRuns": [
+      "#1 pass1_initial: FAIL",
+      "#2 rework_verify[model]: PASS"
+    ],
+    "healedBy": [
+      "model"
+    ],
+    "reworkSummary": [
+      {
+        "targetFiles": [
+          "domain.js"
+        ],
+        "modelPatch": "passed",
+        "filesPatchedByModel": [
+          "domain.js"
+        ],
+        "healedBy": "model"
+      }
+    ],
+    "fileHistory": {
+      "brief.md": [
+        "engine:scenario_fixture"
+      ],
+      "runbook.md": [
+        "engine:scenario_fixture"
+      ],
+      "app.js": [
+        "@builder:rejected_contract",
+        "engine:scenario_fixture"
+      ],
+      "index.html": [
+        "@builder:model"
+      ],
+      "domain.js": [
+        "engine:scenario_fixture",
+        "engine:fault_injection",
+        "@builder:model"
+      ],
+      "test.js": [
+        "engine:scenario_fixture"
+      ],
+      "README.md": [
+        "@lead:model"
+      ],
+      "benchmark.json": [
+        "engine:engine_summary"
+      ]
+    },
+    "modelTouchedNonDomainFiles": [
+      "index.html",
+      "README.md"
+    ],
+    "modelWroteDomain": 1,
+    "rejectedProtectedWrites": [
+      "app.js: rejected_contract by @builder (6090B)"
+    ],
+    "finalVsFixture": {
+      "app.js": "identical",
+      "test.js": "identical",
+      "index.html": "DIFFERENT",
+      "domain.js": "identical"
+    },
+    "faultLinePresentInHealedDomain": false,
+    "domainEqualsCleanFixture": true,
+    "grades": {
+      "fixturesPlusHealedDomain": "PASS",
+      "fixtureTestVsShippedFiles": "PASS",
+      "sanity_faultyDomainFailsFixtureTest": "FAIL(exit 1)"
+    },
+    "lead": [
+      {
+        "phase": "release",
+        "simulated": false,
+        "finishReason": "stop"
+      }
+    ],
+    "builderBuild": [
+      {
+        "phase": "build",
+        "simulated": false,
+        "finishReason": "stop",
+        "files": [
+          "app.js",
+          "index.html"
+        ]
+      }
+    ],
+    "builderRework": [
+      {
+        "phase": "rework_fix",
+        "simulated": false,
+        "finishReason": "stop",
+        "files": [
+          "domain.js"
+        ]
+      }
+    ],
+    "architect": [
+      {
+        "phase": "architecture",
+        "simulated": false,
+        "finishReason": "stop"
+      }
+    ],
+    "sessionTelemetry": {
+      "totalCalls": 5,
+      "liveCalls": 5,
+      "simulatedCalls": 0,
+      "totalTokensUsed": 19288,
+      "errors": 0,
+      "retries": 0
+    }
+  },
+  "oncall-fairness-scheduler": {
+    "sessionId": "swarm-mvti6mtl-feo0",
+    "status": "completed",
+    "score": 98,
+    "verdict": "VERIFIED_PASS",
+    "verificationRuns": [
+      "#1 pass1_initial: FAIL",
+      "#2 rework_verify[model]: FAIL",
+      "#3 restore_verify[deterministic_restore]: PASS"
+    ],
+    "healedBy": [
+      "deterministic_restore"
+    ],
+    "reworkSummary": [
+      {
+        "targetFiles": [
+          "domain.js"
+        ],
+        "modelPatch": "failed",
+        "filesPatchedByModel": [
+          "domain.js"
+        ],
+        "healedBy": "deterministic_restore"
+      }
+    ],
+    "fileHistory": {
+      "brief.md": [
+        "engine:scenario_fixture"
+      ],
+      "runbook.md": [
+        "engine:scenario_fixture"
+      ],
+      "app.js": [
+        "@builder:rejected_contract",
+        "engine:scenario_fixture"
+      ],
+      "index.html": [
+        "@builder:model"
+      ],
+      "domain.js": [
+        "engine:scenario_fixture",
+        "engine:fault_injection",
+        "@builder:model",
+        "engine:deterministic_restore"
+      ],
+      "test.js": [
+        "engine:scenario_fixture"
+      ],
+      "README.md": [
+        "@lead:model"
+      ],
+      "benchmark.json": [
+        "engine:engine_summary"
+      ]
+    },
+    "modelTouchedNonDomainFiles": [
+      "index.html",
+      "README.md"
+    ],
+    "modelWroteDomain": 1,
+    "rejectedProtectedWrites": [
+      "app.js: rejected_contract by @builder (9435B)"
+    ],
+    "finalVsFixture": {
+      "app.js": "identical",
+      "test.js": "identical",
+      "index.html": "DIFFERENT",
+      "domain.js": "identical"
+    },
+    "faultLinePresentInHealedDomain": false,
+    "domainEqualsCleanFixture": true,
+    "grades": {
+      "fixturesPlusHealedDomain": "PASS",
+      "fixtureTestVsShippedFiles": "PASS",
+      "sanity_faultyDomainFailsFixtureTest": "FAIL(exit 1)",
+      "sanity_ascendingBusiestFaultFailsFixtureTest": "FAIL(exit 1)"
+    },
+    "lead": [
+      {
+        "phase": "release",
+        "simulated": false,
+        "finishReason": "stop"
+      }
+    ],
+    "builderBuild": [
+      {
+        "phase": "build",
+        "simulated": false,
+        "finishReason": "stop",
+        "files": [
+          "app.js",
+          "index.html"
+        ]
+      }
+    ],
+    "builderRework": [
+      {
+        "phase": "rework_fix",
+        "simulated": false,
+        "finishReason": "stop",
+        "files": [
+          "domain.js"
+        ]
+      }
+    ],
+    "architect": [
+      {
+        "phase": "architecture",
+        "simulated": false,
+        "finishReason": "stop"
+      }
+    ],
+    "sessionTelemetry": {
+      "totalCalls": 5,
+      "liveCalls": 5,
+      "simulatedCalls": 0,
+      "totalTokensUsed": 21790,
+      "errors": 0,
+      "retries": 0
+    },
+    "oncall": {
+      "sortAnchor": "loadOf(b) - loadOf(a) => descending (busiest first, correct)",
+      "rebalanceLines": [
+        "const chosen = ranked[0];",
+        "const busiest = ranked[0];",
+        "const quietest = ranked[ranked.length - 1];",
+        "if (busiest.id === quietest.id) return { moved: false, fairnessIndex: index };",
+        "const victim = open.find(function (shift) { return shift.engineerId === busiest.id; }) || open[0];",
+        "if (victim.engineerId === quietest.id) return { moved: false, fairnessIndex: index };",
+        "victim.engineerId = quietest.id;",
+        "to: quietest.id,",
+        "busiest: busiest.id,",
+        "quietest: quietest.id,"
+      ]
+    }
+  }
+}

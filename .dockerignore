@@ -1,0 +1,32 @@
+# Hosted-demo image strategy: do NOT ship museswarm-studio/dist.
+# server.js prefers dist/ when present, then public/. With dist absent the
+# container serves public/ (the Studio bundle PR rebuilds that tree).
+# Chosen over a multi-stage Studio build so this image never copies a stale
+# Vite bundle and never touches museswarm-studio/** or public/**.
+
+node_modules
+**/node_modules
+museswarm-studio/dist
+museswarm-studio/node_modules
+
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+*.log
+*.mp4
+museswarm-demo-v2.mp4
+
+# Generated workspaces except the committed golden live sessions.
+workspaces/*
+!workspaces/.gitkeep
+!workspaces/golden
+!workspaces/golden/**
+!workspaces/golden-sprint-priority-engine-bvy7
+!workspaces/golden-sprint-priority-engine-bvy7/**
+!workspaces/golden-feature-flag-rollout-fxhd
+!workspaces/golden-feature-flag-rollout-fxhd/**
+!workspaces/golden-oncall-fairness-scheduler-feo0
+!workspaces/golden-oncall-fairness-scheduler-feo0/**

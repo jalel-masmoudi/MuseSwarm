@@ -1,0 +1,391 @@
+{
+  "sessionId": "swarm-mvti4gn7-bvy7",
+  "slug": "sprint-priority-engine",
+  "prompt": "Build a Real-Time Engineering Sprint & Incident Priority Engine with weighted impact/urgency/effort scoring, an SLA breach detector, and a multi-file workspace (domain.js, app.js, test.js, index.html).",
+  "modelId": "meta-models/muse-spark-open-1026",
+  "endpoint": "https://inference.baseten.co/v1",
+  "mode": "live-baseten",
+  "status": "completed",
+  "durationMs": 43434,
+  "scenarioId": "sprint-priority-engine",
+  "reworkCycles": 1,
+  "healedBy": [
+    "model"
+  ],
+  "reworkSummary": [
+    {
+      "reworkAttempt": 1,
+      "targetFiles": [
+        "domain.js"
+      ],
+      "modelReply": {
+        "simulated": false,
+        "finishReason": "stop",
+        "parsedJson": true,
+        "format": "json_files_array",
+        "files": [
+          "domain.js"
+        ],
+        "rejectedProtectedFiles": [],
+        "rejectedNonTargets": [],
+        "rejectedGradingCheckFiles": []
+      },
+      "modelPatch": "passed",
+      "filesPatchedByModel": [
+        "domain.js"
+      ],
+      "rejectedProtectedFiles": [],
+      "rejectedNonTargets": [],
+      "rejectedGradingCheckFiles": [],
+      "healedBy": "model",
+      "verificationRuns": [
+        {
+          "run": 2,
+          "phase": "rework_verify",
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "fileAttribution": {
+    "brief.md": {
+      "author": "engine",
+      "source": "scenario_fixture"
+    },
+    "runbook.md": {
+      "author": "engine",
+      "source": "scenario_fixture"
+    },
+    "index.html": {
+      "author": "@builder",
+      "source": "model"
+    },
+    "domain.js": {
+      "author": "@builder",
+      "source": "model"
+    },
+    "app.js": {
+      "author": "engine",
+      "source": "scenario_fixture"
+    },
+    "test.js": {
+      "author": "engine",
+      "source": "scenario_fixture"
+    },
+    "README.md": {
+      "author": "@lead",
+      "source": "model"
+    }
+  },
+  "modelReplies": [
+    {
+      "agent": "@architect",
+      "phase": "architecture",
+      "reworkAttempt": 0,
+      "simulated": false,
+      "finishReason": "length",
+      "truncated": true,
+      "contentChars": 9714,
+      "parse": {
+        "parsedJson": false,
+        "keys": []
+      }
+    },
+    {
+      "agent": "@builder",
+      "phase": "build",
+      "reworkAttempt": 0,
+      "simulated": false,
+      "finishReason": "stop",
+      "truncated": false,
+      "contentChars": 3510,
+      "parse": {
+        "parsedJson": true,
+        "format": "json_files_array",
+        "files": [
+          "app.js",
+          "index.html"
+        ],
+        "rejectedProtectedFiles": [],
+        "retryReason": null
+      }
+    },
+    {
+      "agent": "@builder",
+      "phase": "rework_fix",
+      "reworkAttempt": 1,
+      "simulated": false,
+      "finishReason": "stop",
+      "truncated": false,
+      "contentChars": 3013,
+      "parse": {
+        "parsedJson": true,
+        "format": "json_files_array",
+        "files": [
+          "domain.js"
+        ],
+        "rejectedProtectedFiles": [],
+        "rejectedNonTargets": [],
+        "rejectedGradingCheckFiles": [],
+        "modelPatch": "passed",
+        "targetFiles": [
+          "domain.js"
+        ],
+        "readOnlyFiles": [
+          "test.js"
+        ]
+      }
+    },
+    {
+      "agent": "@verifier",
+      "phase": "audit",
+      "reworkAttempt": 0,
+      "simulated": false,
+      "finishReason": "stop",
+      "truncated": false,
+      "contentChars": 1237,
+      "parse": {
+        "parsedJson": true,
+        "keys": [
+          "verdict",
+          "qualityScore",
+          "rubric",
+          "messageToBuilder",
+          "messageToLead"
+        ]
+      }
+    },
+    {
+      "agent": "@lead",
+      "phase": "release",
+      "reworkAttempt": 0,
+      "simulated": false,
+      "finishReason": "stop",
+      "truncated": false,
+      "contentChars": 1360,
+      "parse": {
+        "parsedJson": true,
+        "keys": [
+          "readmeMd",
+          "finalBroadcast"
+        ],
+        "retryReason": null
+      }
+    }
+  ],
+  "reworkDiffs": [
+    {
+      "path": "domain.js",
+      "author": "@builder",
+      "source": "model",
+      "fixedBy": "@builder (Muse Spark reply)",
+      "verifiedPass": true,
+      "passFrom": 1,
+      "passTo": 2,
+      "reworkAttempt": 1,
+      "diff": "--- a/domain.js\n+++ b/domain.js\n@@ -26,7 +26,7 @@\n       const effort = clamp(source.effort, 3);\n       const slaMinutes = Math.max(1, Number(source.slaMinutes) || 60);\n       const elapsedMinutes = Math.max(0, Number(source.elapsedMinutes) || 0);\n-      const slaBreached = elapsedMinutes >= slaMinutes * 60 * 1000; // pass-1 fault: minutes compared as milliseconds\n+      const slaBreached = elapsedMinutes >= slaMinutes;\n       const slaBoost = slaBreached ? 2.5 : 0;\n       const score = Number((((impact * 1.6 + urgency * 1.4) / Math.sqrt(effort)) + slaBoost).toFixed(2));\n       const item = {",
+      "beforeSnippet": "      const effort = clamp(source.effort, 3);\n      const slaMinutes = Math.max(1, Number(source.slaMinutes) || 60);\n      const elapsedMinutes = Math.max(0, Number(source.elapsedMinutes) || 0);\n      const slaBreached = elapsedMinutes >= slaMinutes * 60 * 1000; // pass-1 fault: minutes compared as milliseconds\n      const slaBoost = slaBreached ? 2.5 : 0;\n      const score = Number((((impact * 1.6 + urgency * 1.4) / Math.sqrt(effort)) + slaBoost).toFixed(2));\n      const item = {",
+      "afterSnippet": "      const effort = clamp(source.effort, 3);\n      const slaMinutes = Math.max(1, Number(source.slaMinutes) || 60);\n      const elapsedMinutes = Math.max(0, Number(source.elapsedMinutes) || 0);\n      const slaBreached = elapsedMinutes >= slaMinutes;\n      const slaBoost = slaBreached ? 2.5 : 0;\n      const score = Number((((impact * 1.6 + urgency * 1.4) / Math.sqrt(effort)) + slaBoost).toFixed(2));\n      const item = {",
+      "timestamp": "2026-10-29T12:10:59.361Z"
+    }
+  ],
+  "fileHistory": {
+    "brief.md": [
+      {
+        "revision": 1,
+        "author": "engine",
+        "source": "scenario_fixture",
+        "reworkAttempt": 0,
+        "updatedAt": "2026-10-29T12:10:51.371Z",
+        "bytes": 831,
+        "pass": 1,
+        "content": "# Brief — Sprint & Incident Priority Engine\n\n## Problem\nEngineering leads mix feature work and live incidents in one queue. A single unsorted list hides SLA breaches and over-weights easy tasks.\n\n## Target users\nIncident commanders and sprint leads who need a ranked queue during a live shift.\n\n## Core behavior\n- Score each item as `((impact × 1.6) + (urgency × 1.4)) / sqrt(effort)`.\n- When elapsed minutes reach the SLA, add a fixed boost so the breach outranks healthy work of similar size.\n- Completing an item drops it out of the breach list without deleting history.\n\n## Files\n- `domain.js` — `TaskPriorityEngine` scoring and SLA rules.\n- `app.js` — isomorphic facade (`module.exports` and `globalThis.AppCore`).\n- `test.js` — Node `assert` suite.\n- `index.html` — dark-mode queue you can extend in the browser.\n"
+      }
+    ],
+    "runbook.md": [
+      {
+        "revision": 1,
+        "author": "engine",
+        "source": "scenario_fixture",
+        "reworkAttempt": 0,
+        "updatedAt": "2026-10-29T12:10:51.371Z",
+        "bytes": 720,
+        "pass": 1,
+        "content": "# Runbook — Sprint & Incident Priority Engine\n\n## Layout\n1. `domain.js` exports `TaskPriorityEngine`.\n2. `app.js` re-exports it for Node and assigns `globalThis.AppCore`.\n3. `index.html` loads `domain.js` then `app.js`.\n4. `test.js` requires `./app.js` and prints `[PASS]` lines.\n\n## Contract\n- `addItem({ title, impact, urgency, effort, slaMinutes, elapsedMinutes })` clamps impact/urgency/effort to 1..10.\n- `slaBreached` is `elapsedMinutes >= slaMinutes`. Both values are minutes.\n- `getRankedItems` sorts by score descending.\n- `getSlaBreaches` returns open items that have already breached.\n- Empty titles and unknown ids throw.\n\n## Do not\n- Do not compare minutes to milliseconds.\n- Do not add npm dependencies.\n"
+      }
+    ],
+    "app.js": [
+      {
+        "revision": 1,
+        "author": "@builder",
+        "source": "rejected_contract",
+        "rejected": true,
+        "updatedAt": "2026-10-29T12:10:55.778Z",
+        "bytes": 1625,
+        "content": "(function(g){\n  const W={impact:0.5,urgency:0.3,effort:0.2};\n  const SLA={critical:4,high:24,medium:72,low:168};\n  function clamp(n,a,b){return Math.max(a,Math.min(b,n));}\n  function score(t){\n    const i=clamp(Number(t.impact)||0,1,10);\n    const u=clamp(Number(t.urgency)||0,1,10);\n    const e=clamp(Number(t.effort)||0,1,10);\n    const s=+(i*W.impact+u*W.urgency+(11-e)*W.effort).toFixed(2);\n    return s;\n  }\n  function priority(s){\n    if(s>=8) return 'critical';\n    if(s>=6) return 'high';\n    if(s>=4) return 'medium';\n    return 'low';\n  }\n  function slaDeadline(createdAt, pri){\n    const h=SLA[pri]||SLA.low;\n    return new Date(new Date(createdAt).getTime()+h*3600000);\n  }\n  function isBreached(t, now=new Date()){\n    if(t.resolvedAt) return false;\n    const s=score(t), p=priority(s);\n    const dl=slaDeadline(t.createdAt,p);\n    return new Date(now) > dl;\n  }\n  function rank(tasks, now=new Date()){\n    return [...tasks].map(t=>{\n      const s=score(t), p=priority(s), breached=isBreached(t,now);\n      return {...t,score:s,priority:p,breached,deadline:slaDeadline(t.createdAt,p)};\n    }).sort((a,b)=> (b.breached-a.breached) || (b.score-a.score));\n  }\n  function createTask(o){\n    return {id:o.id||Math.random().toString(36).slice(2,7),title:o.title||'Untitled',impact:o.impact,urgency:o.urgency,effort:o.effort,createdAt:o.createdAt||new Date().toISOString(),resolvedAt:o.resolvedAt||null};\n  }\n  const AppCore={W,SLA,score,priority,slaDeadline,isBreached,rank,createTask};\n  if(typeof module!=='undefined') module.exports=AppCore;\n  g.AppCore=AppCore;\n})(typeof globalThis!=='undefined'?globalThis:this);"
+      },
+      {
+        "revision": 2,
+        "author": "engine",
+        "source": "scenario_fixture",
+        "reworkAttempt": 0,
+        "updatedAt": "2026-10-29T12:10:55.779Z",
+        "bytes": 559,
+        "pass": 1,
+        "content": "// Isomorphic facade — Node require('./domain.js') and browser global SprintDomain.\n(function (root) {\n  const domain = (typeof module !== 'undefined' && module.exports)\n    ? require('./domain.js')\n    : root.SprintDomain;\n  const api = { TaskPriorityEngine: domain.TaskPriorityEngine };\n  if (typeof module !== 'undefined' && module.exports) {\n    module.exports = api;\n  }\n  if (typeof globalThis !== 'undefined') {\n    globalThis.AppCore = api;\n  } else if (root) {\n    root.AppCore = api;\n  }\n})(typeof globalThis !== 'undefined' ? globalThis : this);\n"
+      }
+    ],
+    "index.html": [
+      {
+        "revision": 1,
+        "author": "@builder",
+        "source": "model",
+        "reworkAttempt": 0,
+        "updatedAt": "2026-10-29T12:10:55.779Z",
+        "bytes": 1510,
+        "pass": 1,
+        "content": "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Sprint Priority Engine</title><style>body{margin:0;font-family:system-ui;background:#0f1115;color:#e6e6e6}header{padding:16px;background:#1a1d24}main{padding:16px;max-width:900px;margin:auto}.card{background:#1e222c;padding:12px;border-radius:8px;margin:8px 0}input,button{padding:6px;border-radius:6px;border:1px solid #333;background:#111;color:#eee}button{cursor:pointer;background:#4f46e5;border:none}.breach{border-left:4px solid #ef4444}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}</style></head><body><header><h2>Sprint & Incident Priority Engine</h2></header><main><div class=\"grid\"><input id=\"title\" placeholder=\"Title\"><input id=\"impact\" type=\"number\" min=\"1\" max=\"10\" value=\"5\"><input id=\"urgency\" type=\"number\" min=\"1\" max=\"10\" value=\"5\"><input id=\"effort\" type=\"number\" min=\"1\" max=\"10\" value=\"5\"></div><button onclick=\"add()\">Add Task</button><div id=\"list\"></div></main><script src=\"app.js\"></script><script>let tasks=[];function add(){tasks.push(AppCore.createTask({title:title.value,impact:+impact.value,urgency:+urgency.value,effort:+effort.value}));render()}function render(){const r=AppCore.rank(tasks);list.innerHTML=r.map(t=>`<div class=\"card ${t.breached?'breach':''}\"><b>${t.title}</b> - ${t.priority} (${t.score}) ${t.breached?'SLA BREACH':''}<br><small>Deadline: ${t.deadline.toLocaleString()}</small></div>`).join('')}</script></body></html>"
+      }
+    ],
+    "domain.js": [
+      {
+        "revision": 1,
+        "author": "engine",
+        "source": "scenario_fixture",
+        "reworkAttempt": 0,
+        "updatedAt": "2026-10-29T12:10:55.779Z",
+        "bytes": 2693,
+        "pass": 1,
+        "content": "// Real-Time Engineering Sprint & Incident Priority domain. Zero npm dependencies.\n(function (root, factory) {\n  const api = factory();\n  if (typeof module !== 'undefined' && module.exports) module.exports = api;\n  if (root) root.SprintDomain = api;\n})(typeof globalThis !== 'undefined' ? globalThis : this, function () {\n  function clamp(value, fallback) {\n    const n = Number(value);\n    const base = Number.isFinite(n) ? n : fallback;\n    return Math.max(1, Math.min(10, base));\n  }\n\n  class TaskPriorityEngine {\n    constructor() {\n      this.items = [];\n    }\n\n    addItem(input) {\n      const source = input || {};\n      const title = source.title;\n      if (!title || typeof title !== 'string' || !title.trim()) {\n        throw new Error('Title is required');\n      }\n      const impact = clamp(source.impact, 5);\n      const urgency = clamp(source.urgency, 5);\n      const effort = clamp(source.effort, 3);\n      const slaMinutes = Math.max(1, Number(source.slaMinutes) || 60);\n      const elapsedMinutes = Math.max(0, Number(source.elapsedMinutes) || 0);\n      const slaBreached = elapsedMinutes >= slaMinutes;\n      const slaBoost = slaBreached ? 2.5 : 0;\n      const score = Number((((impact * 1.6 + urgency * 1.4) / Math.sqrt(effort)) + slaBoost).toFixed(2));\n      const item = {\n        id: 'item-' + (this.items.length + 1),\n        title: title.trim(),\n        impact: impact,\n        urgency: urgency,\n        effort: effort,\n        slaMinutes: slaMinutes,\n        elapsedMinutes: elapsedMinutes,\n        slaBreached: slaBreached,\n        owner: source.owner || '@builder',\n        score: score,\n        status: 'open',\n      };\n      this.items.push(item);\n      return item;\n    }\n\n    getRankedItems() {\n      return this.items.slice().sort(function (a, b) {\n        return b.score - a.score || a.id.localeCompare(b.id);\n      });\n    }\n\n    getSlaBreaches() {\n      return this.items.filter(function (item) {\n        return item.status !== 'done' && item.slaBreached;\n      });\n    }\n\n    completeItem(id) {\n      const found = this.items.find(function (item) { return item.id === id; });\n      if (!found) throw new Error('Item not found: ' + id);\n      found.status = 'done';\n      return found;\n    }\n\n    getSummary() {\n      const total = this.items.length;\n      const done = this.items.filter(function (item) { return item.status === 'done'; }).length;\n      const top = this.getRankedItems()[0] || null;\n      return {\n        total: total,\n        done: done,\n        open: total - done,\n        slaBreaches: this.getSlaBreaches().length,\n        topPriority: top ? top.title : null,\n      };\n    }\n  }\n\n  return { TaskPriorityEngine: TaskPriorityEngine };\n});\n"
+      },
+      {
+        "revision": 2,
+        "author": "engine",
+        "source": "fault_injection",
+        "reworkAttempt": 0,
+        "updatedAt": "2026-10-29T12:10:55.779Z",
+        "bytes": 2755,
+        "pass": 1,
+        "content": "// Real-Time Engineering Sprint & Incident Priority domain. Zero npm dependencies.\n(function (root, factory) {\n  const api = factory();\n  if (typeof module !== 'undefined' && module.exports) module.exports = api;\n  if (root) root.SprintDomain = api;\n})(typeof globalThis !== 'undefined' ? globalThis : this, function () {\n  function clamp(value, fallback) {\n    const n = Number(value);\n    const base = Number.isFinite(n) ? n : fallback;\n    return Math.max(1, Math.min(10, base));\n  }\n\n  class TaskPriorityEngine {\n    constructor() {\n      this.items = [];\n    }\n\n    addItem(input) {\n      const source = input || {};\n      const title = source.title;\n      if (!title || typeof title !== 'string' || !title.trim()) {\n        throw new Error('Title is required');\n      }\n      const impact = clamp(source.impact, 5);\n      const urgency = clamp(source.urgency, 5);\n      const effort = clamp(source.effort, 3);\n      const slaMinutes = Math.max(1, Number(source.slaMinutes) || 60);\n      const elapsedMinutes = Math.max(0, Number(source.elapsedMinutes) || 0);\n      const slaBreached = elapsedMinutes >= slaMinutes * 60 * 1000; // pass-1 fault: minutes compared as milliseconds\n      const slaBoost = slaBreached ? 2.5 : 0;\n      const score = Number((((impact * 1.6 + urgency * 1.4) / Math.sqrt(effort)) + slaBoost).toFixed(2));\n      const item = {\n        id: 'item-' + (this.items.length + 1),\n        title: title.trim(),\n        impact: impact,\n        urgency: urgency,\n        effort: effort,\n        slaMinutes: slaMinutes,\n        elapsedMinutes: elapsedMinutes,\n        slaBreached: slaBreached,\n        owner: source.owner || '@builder',\n        score: score,\n        status: 'open',\n      };\n      this.items.push(item);\n      return item;\n    }\n\n    getRankedItems() {\n      return this.items.slice().sort(function (a, b) {\n        return b.score - a.score || a.id.localeCompare(b.id);\n      });\n    }\n\n    getSlaBreaches() {\n      return this.items.filter(function (item) {\n        return item.status !== 'done' && item.slaBreached;\n      });\n    }\n\n    completeItem(id) {\n      const found = this.items.find(function (item) { return item.id === id; });\n      if (!found) throw new Error('Item not found: ' + id);\n      found.status = 'done';\n      return found;\n    }\n\n    getSummary() {\n      const total = this.items.length;\n      const done = this.items.filter(function (item) { return item.status === 'done'; }).length;\n      const top = this.getRankedItems()[0] || null;\n      return {\n        total: total,\n        done: done,\n        open: total - done,\n        slaBreaches: this.getSlaBreaches().length,\n        topPriority: top ? top.title : null,\n      };\n    }\n  }\n\n  return { TaskPriorityEngine: TaskPriorityEngine };\n});\n"
+      },
+      {
+        "revision": 3,
+        "author": "@builder",
+        "source": "model",
+        "reworkAttempt": 1,
+        "updatedAt": "2026-10-29T12:10:59.360Z",
+        "bytes": 2693,
+        "pass": 2,
+        "content": "// Real-Time Engineering Sprint & Incident Priority domain. Zero npm dependencies.\n(function (root, factory) {\n  const api = factory();\n  if (typeof module !== 'undefined' && module.exports) module.exports = api;\n  if (root) root.SprintDomain = api;\n})(typeof globalThis !== 'undefined' ? globalThis : this, function () {\n  function clamp(value, fallback) {\n    const n = Number(value);\n    const base = Number.isFinite(n) ? n : fallback;\n    return Math.max(1, Math.min(10, base));\n  }\n\n  class TaskPriorityEngine {\n    constructor() {\n      this.items = [];\n    }\n\n    addItem(input) {\n      const source = input || {};\n      const title = source.title;\n      if (!title || typeof title !== 'string' || !title.trim()) {\n        throw new Error('Title is required');\n      }\n      const impact = clamp(source.impact, 5);\n      const urgency = clamp(source.urgency, 5);\n      const effort = clamp(source.effort, 3);\n      const slaMinutes = Math.max(1, Number(source.slaMinutes) || 60);\n      const elapsedMinutes = Math.max(0, Number(source.elapsedMinutes) || 0);\n      const slaBreached = elapsedMinutes >= slaMinutes;\n      const slaBoost = slaBreached ? 2.5 : 0;\n      const score = Number((((impact * 1.6 + urgency * 1.4) / Math.sqrt(effort)) + slaBoost).toFixed(2));\n      const item = {\n        id: 'item-' + (this.items.length + 1),\n        title: title.trim(),\n        impact: impact,\n        urgency: urgency,\n        effort: effort,\n        slaMinutes: slaMinutes,\n        elapsedMinutes: elapsedMinutes,\n        slaBreached: slaBreached,\n        owner: source.owner || '@builder',\n        score: score,\n        status: 'open',\n      };\n      this.items.push(item);\n      return item;\n    }\n\n    getRankedItems() {\n      return this.items.slice().sort(function (a, b) {\n        return b.score - a.score || a.id.localeCompare(b.id);\n      });\n    }\n\n    getSlaBreaches() {\n      return this.items.filter(function (item) {\n        return item.status !== 'done' && item.slaBreached;\n      });\n    }\n\n    completeItem(id) {\n      const found = this.items.find(function (item) { return item.id === id; });\n      if (!found) throw new Error('Item not found: ' + id);\n      found.status = 'done';\n      return found;\n    }\n\n    getSummary() {\n      const total = this.items.length;\n      const done = this.items.filter(function (item) { return item.status === 'done'; }).length;\n      const top = this.getRankedItems()[0] || null;\n      return {\n        total: total,\n        done: done,\n        open: total - done,\n        slaBreaches: this.getSlaBreaches().length,\n        topPriority: top ? top.title : null,\n      };\n    }\n  }\n\n  return { TaskPriorityEngine: TaskPriorityEngine };\n});\n"
+      }
+    ],
+    "test.js": [
+      {
+        "revision": 1,
+        "author": "engine",
+        "source": "scenario_fixture",
+        "reworkAttempt": 0,
+        "updatedAt": "2026-10-29T12:10:55.779Z",
+        "bytes": 2005,
+        "pass": 1,
+        "content": "const assert = require('assert');\nconst { TaskPriorityEngine } = require('./app.js');\n\nconst engine = new TaskPriorityEngine();\nconst breach = engine.addItem({ title: 'Checkout 500s', impact: 10, urgency: 9, effort: 2, slaMinutes: 30, elapsedMinutes: 45, owner: '@builder' });\nconst polish = engine.addItem({ title: 'Dark-mode polish', impact: 6, urgency: 5, effort: 4, slaMinutes: 120, elapsedMinutes: 20 });\nconst bus = engine.addItem({ title: 'Session bus backpressure', impact: 9, urgency: 8, effort: 3, slaMinutes: 60, elapsedMinutes: 15 });\nassert.strictEqual(engine.items.length, 3);\nconsole.log('[PASS] sprint items stored');\n\nassert.strictEqual(breach.slaBreached, true);\nassert.strictEqual(polish.slaBreached, false);\nassert.strictEqual(engine.getSlaBreaches().length, 1);\nconsole.log('[PASS] SLA breach detector uses elapsed minutes against the SLA');\n\nconst ranked = engine.getRankedItems();\nassert.strictEqual(ranked[0].id, breach.id);\nassert.ok(ranked[0].score > ranked[1].score);\nconsole.log('[PASS] weighted impact/urgency/effort ranking puts the breached incident first');\n\nconst calm = new TaskPriorityEngine();\nconst quiet = calm.addItem({ title: 'Checkout 500s', impact: 10, urgency: 9, effort: 2, slaMinutes: 30, elapsedMinutes: 5 });\nassert.strictEqual(quiet.slaBreached, false);\nassert.ok(breach.score > quiet.score);\nconsole.log('[PASS] SLA boost raises score only after the minute budget is spent');\n\nengine.completeItem(polish.id);\nconst summary = engine.getSummary();\nassert.strictEqual(summary.done, 1);\nassert.strictEqual(summary.open, 2);\nassert.strictEqual(summary.slaBreaches, 1);\nassert.strictEqual(summary.topPriority, 'Checkout 500s');\nconsole.log('[PASS] summary counts open work separately from completed items');\n\nassert.throws(function () { engine.addItem({ title: '   ' }); }, /Title is required/);\nassert.throws(function () { engine.completeItem('missing'); }, /Item not found/);\nassert.ok(bus.id);\nconsole.log('[PASS] empty titles and unknown ids are rejected');\n"
+      }
+    ],
+    "README.md": [
+      {
+        "revision": 1,
+        "author": "@lead",
+        "source": "model",
+        "reworkAttempt": 1,
+        "updatedAt": "2026-10-29T12:11:06.350Z",
+        "bytes": 1079,
+        "pass": 2,
+        "content": "# Real-Time Engineering Sprint & Incident Priority Engine\n\nA real-time priority engine for engineering sprints that ranks sprint items and incidents using weighted impact/urgency/effort scoring with an SLA breach detector that automatically boosts breached incidents to the top of the queue.\n\n## Features\n- Weighted impact/urgency/effort scoring for intelligent prioritization\n- SLA breach detector using elapsed minutes against SLA budget\n- SLA boost that raises score only after minute budget is spent\n- Real-time sprint item storage and ranking\n- Summary counts separating open work from completed items\n- Input validation rejecting empty titles and unknown ids\n\n## Files\n- `brief.md` - Project brief and requirements\n- `runbook.md` - Operational runbook\n- `index.html` - Web UI for the priority engine\n- `domain.js` - Core domain logic and scoring engine\n- `app.js` - Application wiring and workspace integration\n- `test.js` - Verification tests for scoring and SLA logic\n\n## Run\n- `node test.js` - Run verification tests\n- `open index.html` - Launch the workspace in browser"
+      }
+    ]
+  },
+  "parallelFanouts": 1,
+  "messagesExchanged": 9,
+  "kanbanTasksTotal": 3,
+  "kanbanTasksDone": 3,
+  "filesGenerated": [
+    "brief.md",
+    "runbook.md",
+    "index.html",
+    "domain.js",
+    "app.js",
+    "test.js",
+    "README.md"
+  ],
+  "totalBytesWritten": 9397,
+  "verification": {
+    "runsCount": 2,
+    "failedRuns": 1,
+    "passedRuns": 1,
+    "runs": [
+      {
+        "run": 1,
+        "pass": 1,
+        "phase": "pass1_initial",
+        "reworkAttempt": 0,
+        "passed": false,
+        "checksPassed": 4,
+        "checksTotal": 5
+      },
+      {
+        "run": 2,
+        "pass": 2,
+        "phase": "rework_verify",
+        "reworkAttempt": 1,
+        "passed": true,
+        "checksPassed": 6,
+        "checksTotal": 6
+      }
+    ],
+    "finalPassed": true,
+    "checksPassed": 6,
+    "checksTotal": 6
+  },
+  "rubric": {
+    "verdict": "VERIFIED_PASS",
+    "qualityScore": 98,
+    "rubric": {
+      "correctness": 25,
+      "testCoverage": 24,
+      "architectureAdherence": 25,
+      "uiCompleteness": 24
+    },
+    "invariants": {
+      "hasCommonJs": true,
+      "hasGlobalExport": true,
+      "zeroExternalDeps": true,
+      "hasScriptTag": true,
+      "hasInteractiveControls": true,
+      "assertCount": 15
+    }
+  },
+  "telemetry": {
+    "totalCalls": 5,
+    "liveCalls": 5,
+    "simulatedCalls": 0,
+    "totalTokensUsed": 16669,
+    "totalReasoningTokens": 6654,
+    "currentTpm": 16669,
+    "tpmLimit": 2000000,
+    "tpmUtilizationPct": 0.833,
+    "avgLatencyMs": 8538,
+    "p50LatencyMs": 4404,
+    "p95LatencyMs": 28450,
+    "minLatencyMs": 2128,
+    "maxLatencyMs": 28450,
+    "latencies": [
+      28450,
+      4404,
+      3286,
+      4422,
+      2128
+    ],
+    "retryCount": 0
+  },
+  "generatedAt": "2026-10-29T12:11:06.350Z"
+}

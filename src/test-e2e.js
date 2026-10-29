@@ -6,7 +6,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const { CONFIG } = require('./config');
 const { BasetenMuseClient, computePercentile } = require('./baseten-client');
 const { MuseSwarmEngine, AGENT_PROFILES, extractJsonBlock, SCENARIO_PRESETS, buildReworkDiff } = require('./swarm-engine');
@@ -14,6 +14,13 @@ const { TOOLS } = require('./mcp-server');
 const { server, engine: httpEngine, normalizeAgentId } = require('./server');
 const { extractFilePatch } = require('./reply-parser');
 const { buildScenarioArtifacts, applyPass1Fault, applyOnCallAscendingBusiestFault } = require('./scenarios');
+const {
+  createRateLimiter,
+  createConcurrencyGate,
+  goldenCatalog,
+  isGoldenSession,
+  buildReplayEvents,
+} = require('./public-demo');
 
 async function testBasetenClientTelemetryAndRetry() {
   console.log('\n--- [Suite 1] BasetenMuseClient Telemetry, Percentile & Retry/Timeout Tests ---');
@@ -1415,6 +1422,228 @@ const __assert = require('assert');
   }
 }
 
+async function waitForUrl(url, timeoutMs = 20000) {
+  const start = Date.now();
+  let lastErr = null;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return res;
+      lastErr = new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise((r) => setTimeout(r, 120));
+  }
+  throw lastErr || new Error(`timed out waiting for ${url}`);
+}
+
+async function readSseEvents(url, { until, timeoutMs = 8000 } = {}) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  const res = await fetch(url, { signal: ac.signal, headers: { Accept: 'text/event-stream' } });
+  assert.strictEqual(res.status, 200);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  const events = [];
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const chunks = buf.split('\n\n');
+      buf = chunks.pop();
+      for (const chunk of chunks) {
+        const line = chunk.split('\n').find((l) => l.startsWith('data: '));
+        if (!line) continue;
+        const event = JSON.parse(line.slice(6));
+        events.push(event);
+        if (until && until(event, events)) {
+          try { await reader.cancel(); } catch (_) {}
+          return events;
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+  return events;
+}
+
+async function testPublicDemoMode() {
+  console.log('\n--- [Suite 11] Public demo replay (goldens, no live Baseten, SSE, rate limit) ---');
+
+  const limiter = createRateLimiter({ limit: 2, windowMs: 60_000 });
+  assert.strictEqual(limiter.allow('a'), true);
+  assert.strictEqual(limiter.allow('a'), true);
+  assert.strictEqual(limiter.allow('a'), false);
+  assert.strictEqual(limiter.allow('b'), true);
+  const gate = createConcurrencyGate(1);
+  assert.strictEqual(gate.tryEnter(), true);
+  assert.strictEqual(gate.tryEnter(), false);
+  gate.leave();
+  assert.strictEqual(gate.tryEnter(), true);
+  gate.leave();
+  console.log('[PASS] 11.1: rate limiter and concurrency gate helpers');
+
+  const goldens = Array.from(httpEngine.sessions.values()).filter(isGoldenSession);
+  assert.strictEqual(goldens.length, 3, 'in-process server must load the 3 golden workspaces');
+  const catalog = goldenCatalog(httpEngine);
+  const byScenario = Object.fromEntries(catalog.map((g) => [g.scenarioId, g]));
+  assert.deepStrictEqual(byScenario['sprint-priority-engine'].healedBy, ['model']);
+  assert.deepStrictEqual(byScenario['feature-flag-rollout'].healedBy, ['model']);
+  assert.deepStrictEqual(byScenario['oncall-fairness-scheduler'].healedBy, ['deterministic_restore']);
+  const replay = buildReplayEvents(goldens.find((s) => s.id === 'swarm-mvti4gn7-bvy7'));
+  assert.ok(replay.some((e) => e.eventType === 'session_created'));
+  assert.ok(replay.some((e) => e.eventType === 'llm_complete'));
+  assert.ok(replay.some((e) => e.eventType === 'file_written'));
+  assert.ok(replay.some((e) => e.eventType === 'session_completed' && Array.isArray(e.healedBy)));
+  console.log('[PASS] 11.2: three goldens load with honest healedBy and SSE replay events');
+
+  const prevDemo = process.env.MUSE_SWARM_PUBLIC_DEMO;
+  process.env.MUSE_SWARM_PUBLIC_DEMO = '1';
+  const demoClient = new BasetenMuseClient();
+  assert.ok(demoClient.forceOffline, 'PUBLIC_DEMO=1 must forceOffline even without MUSE_SWARM_OFFLINE');
+  assert.strictEqual(demoClient.apiKey, '');
+  const tel = demoClient.getTelemetry();
+  assert.strictEqual(tel.mode, 'public-demo');
+  assert.strictEqual(tel.hasApiKey, false);
+  const sim = await demoClient.chatCompletion({
+    agentId: 'lead',
+    messages: [{ role: 'user', content: 'ping' }],
+  });
+  assert.strictEqual(sim.simulated, true);
+  if (prevDemo === undefined) delete process.env.MUSE_SWARM_PUBLIC_DEMO;
+  else process.env.MUSE_SWARM_PUBLIC_DEMO = prevDemo;
+  console.log('[PASS] 11.3: Baseten client in public-demo never uses a live key');
+
+  const port = 18767;
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const childEnv = {
+    ...process.env,
+    PORT: String(port),
+    MUSE_SWARM_PUBLIC_DEMO: '1',
+    MUSE_SWARM_OFFLINE: '0',
+    BASETEN_API_KEY: 'sk-live-must-not-be-used-0123456789abcdef',
+    META_API_KEY: 'sk-live-must-not-be-used-0123456789abcdef',
+    MUSE_SWARM_SSE_REPLAY_MS: '0',
+    MUSE_SWARM_PUBLIC_DEMO_POST_LIMIT: '2',
+    MUSE_SWARM_PUBLIC_DEMO_POST_WINDOW_MS: '60000',
+    MUSE_SWARM_PUBLIC_DEMO_MAX_CONCURRENT: '2',
+  };
+  const child = spawn(process.execPath, ['src/server.js'], {
+    cwd: path.resolve(__dirname, '..'),
+    env: childEnv,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let childOut = '';
+  child.stdout.on('data', (chunk) => { childOut += chunk.toString(); });
+  child.stderr.on('data', (chunk) => { childOut += chunk.toString(); });
+  const createdDirs = [];
+  try {
+    let healthRes;
+    try {
+      healthRes = await waitForUrl(`${baseUrl}/api/health`);
+    } catch (err) {
+      err.message += `\n--- demo server output ---\n${childOut}`;
+      throw err;
+    }
+    const health = await healthRes.json();
+    assert.strictEqual(health.status, 'healthy');
+    assert.strictEqual(health.mode, 'public-demo');
+    assert.strictEqual(health.telemetry.mode, 'public-demo');
+    assert.strictEqual(health.telemetry.hasApiKey, false);
+    assert.strictEqual(health.goldens.length, 3);
+    console.log('[PASS] 11.4: spawned public-demo server reports mode public-demo with a key set');
+
+    const statusRes = await fetch(`${baseUrl}/api/status`);
+    const status = await statusRes.json();
+    assert.strictEqual(status.mode, 'public-demo');
+    const statusById = Object.fromEntries(status.goldens.map((g) => [g.scenarioId, g]));
+    assert.deepStrictEqual(statusById['sprint-priority-engine'].healedBy, ['model']);
+    assert.deepStrictEqual(statusById['feature-flag-rollout'].healedBy, ['model']);
+    assert.deepStrictEqual(statusById['oncall-fairness-scheduler'].healedBy, ['deterministic_restore']);
+    const sprint = status.sessions.find((s) => s.id === 'swarm-mvti4gn7-bvy7');
+    assert.ok(sprint && sprint.golden && sprint.readOnly);
+    const preview = await fetch(`${baseUrl}/preview/swarm-mvti4gn7-bvy7/index.html`);
+    assert.strictEqual(preview.status, 200);
+    const diffs = await fetch(`${baseUrl}/api/session/swarm-mvti4gn7-bvy7/diffs`);
+    const diffsJson = await diffs.json();
+    assert.ok(diffsJson.reworkDiffs.length >= 1);
+    console.log('[PASS] 11.5: goldens served via status, preview, and diffs with correct healedBy');
+
+    const sseEvents = await readSseEvents(`${baseUrl}/api/events?sessionId=swarm-mvti4gn7-bvy7`, {
+      until: (ev) => ev.eventType === 'session_completed',
+    });
+    assert.ok(sseEvents[0].eventType === 'connected');
+    assert.ok(sseEvents.some((e) => e.eventType === 'llm_complete'));
+    assert.ok(sseEvents.some((e) => e.eventType === 'file_written' && e.path === 'domain.js'));
+    const done = sseEvents.find((e) => e.eventType === 'session_completed');
+    assert.ok(done);
+    assert.deepStrictEqual(done.healedBy, ['model']);
+    console.log('[PASS] 11.6: SSE replay of a golden session emits recorded events');
+
+    const runRes = await fetch(`${baseUrl}/api/swarm/rework`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scenarioId: 'sprint-priority-engine',
+        projectName: 'demo-offline-rework',
+        sync: true,
+      }),
+    });
+    assert.strictEqual(runRes.status, 200);
+    const runJson = await runRes.json();
+    assert.strictEqual(runJson.ok, true);
+    if (runJson.session?.workspaceDir) createdDirs.push(runJson.session.workspaceDir);
+    assert.ok(runJson.session.healedBy.includes('deterministic_restore') || runJson.session.healedBy.includes('offline_fixture'));
+    const sources = Object.values(runJson.session.fileHistory || {}).flat().map((h) => h.source);
+    assert.ok(!sources.includes('model'), 'public-demo POSTs must not label writes as model');
+    const afterTel = await (await fetch(`${baseUrl}/api/status`)).json();
+    assert.strictEqual(afterTel.telemetry.mode, 'public-demo');
+    assert.strictEqual(afterTel.telemetry.hasApiKey, false);
+    assert.ok((afterTel.telemetry.liveCalls || 0) === 0, 'public-demo must not record live Baseten calls');
+    console.log('[PASS] 11.7: POST rework in public-demo stays offline with honest attribution');
+
+    const second = await fetch(`${baseUrl}/api/swarm/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: '@architect', message: 'rate-limit probe 2' }),
+    });
+    assert.strictEqual(second.status, 200, 'second POST is still within limit=2');
+    const third = await fetch(`${baseUrl}/api/swarm/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: '@architect', message: 'rate-limit probe 3' }),
+    });
+    assert.strictEqual(third.status, 429, 'third POST in the window must 429');
+    const thirdJson = await third.json();
+    assert.strictEqual(thirdJson.ok, false);
+    console.log('[PASS] 11.8: public-demo POST rate limit returns 429');
+  } finally {
+    for (const dir of createdDirs) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+    if (child.exitCode == null && child.signalCode == null) {
+      child.kill('SIGTERM');
+      await new Promise((resolve) => {
+        const t = setTimeout(() => {
+          try { child.kill('SIGKILL'); } catch (_) {}
+          resolve();
+        }, 3000);
+        child.on('exit', () => {
+          clearTimeout(t);
+          resolve();
+        });
+      });
+    }
+    if (!childOut.includes('public-demo') && child.exitCode && child.exitCode !== 0) {
+      console.error(childOut);
+    }
+  }
+}
+
 async function main() {
   console.log('=== MuseSwarm Engineering Test & Verification Suite ===');
   await testBasetenClientTelemetryAndRetry();
@@ -1428,6 +1657,7 @@ async function main() {
   testOnCallFairnessDirection();
   await testLeadRetryBuilderBudgetAndSessionTelemetry();
   await testProtectedScenarioTests();
+  await testPublicDemoMode();
   console.log('\n✔ ALL UNIT, API & E2E ASSERTIONS PASSED!');
 }
 

@@ -26,11 +26,14 @@ class BasetenMuseClient {
       options.allowOfflineFallback !== undefined ? options.allowOfflineFallback : CONFIG.allowOfflineFallback;
     this.fetchImpl = options.fetchImpl || globalThis.fetch;
     // Simulated replies only, even if BASETEN_API_KEY is in the env or .env. An explicit apiKey or
-    // fetchImpl opts out of the MUSE_SWARM_OFFLINE env switch so mocked-HTTP tests still exercise the live path.
+    // fetchImpl opts out of the MUSE_SWARM_OFFLINE / MUSE_SWARM_PUBLIC_DEMO env switch so mocked-HTTP
+    // tests still exercise the live path. Public demo never calls live Baseten.
     this.forceOffline =
       options.offline !== undefined
         ? Boolean(options.offline)
-        : options.apiKey === undefined && !options.fetchImpl && process.env.MUSE_SWARM_OFFLINE === '1';
+        : options.apiKey === undefined &&
+          !options.fetchImpl &&
+          (process.env.MUSE_SWARM_OFFLINE === '1' || process.env.MUSE_SWARM_PUBLIC_DEMO === '1');
     if (this.forceOffline) this.apiKey = '';
     this.reasoningEffortUnsupported = false;
 
@@ -152,8 +155,15 @@ class BasetenMuseClient {
       retryCount: this.retryCount,
       errorCount: this.errorCount,
       agentBreakdown: this.agentBreakdown,
-      hasApiKey,
-      mode: hasApiKey ? 'live-baseten' : (this.allowOfflineFallback ? 'offline-deterministic-fallback' : 'unconfigured'),
+      hasApiKey: process.env.MUSE_SWARM_PUBLIC_DEMO === '1' ? false : hasApiKey,
+      mode:
+        process.env.MUSE_SWARM_PUBLIC_DEMO === '1'
+          ? 'public-demo'
+          : hasApiKey
+            ? 'live-baseten'
+            : this.allowOfflineFallback
+              ? 'offline-deterministic-fallback'
+              : 'unconfigured',
     };
   }
 
