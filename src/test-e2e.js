@@ -3,6 +3,7 @@
 process.env.MUSE_SWARM_OFFLINE = '1';
 
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -20,6 +21,10 @@ const {
   goldenCatalog,
   isGoldenSession,
   buildReplayEvents,
+  isProtectedWorkspaceDir,
+  listEphemeralWorkspaceDirs,
+  safeRemoveWorkspaceDir,
+  prunePublicDemoWorkspaces,
 } = require('./public-demo');
 
 async function testBasetenClientTelemetryAndRetry() {
@@ -1471,6 +1476,47 @@ async function readSseEvents(url, { until, timeoutMs = 8000 } = {}) {
   return events;
 }
 
+async function stopChild(child) {
+  if (!child || (child.exitCode != null && child.signalCode == null && child.killed)) return;
+  if (child.exitCode != null || child.signalCode != null) return;
+  child.kill('SIGTERM');
+  await new Promise((resolve) => {
+    const t = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch (_) {}
+      resolve();
+    }, 3000);
+    child.on('exit', () => {
+      clearTimeout(t);
+      resolve();
+    });
+  });
+}
+
+function checksumTree(root) {
+  const hash = crypto.createHash('sha256');
+  const walk = (dir) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      const rel = path.relative(root, full).split(path.sep).join('/');
+      if (entry.isDirectory()) {
+        hash.update(`dir:${rel}\n`);
+        walk(full);
+      } else if (entry.isFile()) {
+        hash.update(`file:${rel}\n`);
+        hash.update(fs.readFileSync(full));
+      }
+    }
+  };
+  walk(root);
+  return hash.digest('hex');
+}
+
+function checksumProtectedWorkspaces() {
+  const names = fs.readdirSync(CONFIG.workspacesDir).filter(isProtectedWorkspaceDir).sort();
+  return Object.fromEntries(names.map((name) => [name, checksumTree(path.join(CONFIG.workspacesDir, name))]));
+}
+
 async function testPublicDemoMode() {
   console.log('\n--- [Suite 11] Public demo replay (goldens, no live Baseten, SSE, rate limit) ---');
 
@@ -1625,21 +1671,151 @@ async function testPublicDemoMode() {
     for (const dir of createdDirs) {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
     }
-    if (child.exitCode == null && child.signalCode == null) {
-      child.kill('SIGTERM');
-      await new Promise((resolve) => {
-        const t = setTimeout(() => {
-          try { child.kill('SIGKILL'); } catch (_) {}
-          resolve();
-        }, 3000);
-        child.on('exit', () => {
-          clearTimeout(t);
-          resolve();
-        });
-      });
-    }
+    await stopChild(child);
     if (!childOut.includes('public-demo') && child.exitCode && child.exitCode !== 0) {
       console.error(childOut);
+    }
+  }
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'museswarm-demo-gc-'));
+  try {
+    const fakeEngine = { sessions: new Map(), activeSessionId: null };
+    const goldenDir = path.join(tmpRoot, 'golden-sprint-priority-engine-bvy7');
+    const catalogDir = path.join(tmpRoot, 'golden');
+    const refDir = path.join(tmpRoot, 'sprint-priority-engine-8z24');
+    const outsideDir = path.join(os.tmpdir(), `museswarm-gc-outside-${Date.now()}`);
+    fs.mkdirSync(goldenDir);
+    fs.writeFileSync(path.join(goldenDir, 'GOLDEN.md'), 'keep-me');
+    fs.mkdirSync(catalogDir);
+    fs.writeFileSync(path.join(catalogDir, 'README.md'), 'catalog');
+    fs.mkdirSync(refDir);
+    fs.writeFileSync(path.join(refDir, 'README.md'), '8z24');
+    fs.mkdirSync(outsideDir);
+    fs.writeFileSync(path.join(outsideDir, 'secret.txt'), 'nope');
+
+    const mkEphemeral = (name, status, createdAt) => {
+      const dir = path.join(tmpRoot, name);
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, 'app.js'), `// ${name}\n`);
+      const session = {
+        id: `sess-${name}`,
+        workspaceDir: dir,
+        status,
+        createdAt,
+      };
+      fakeEngine.sessions.set(session.id, session);
+      return session;
+    };
+    const old = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const recent = new Date().toISOString();
+    mkEphemeral('ephemeral-old', 'completed', old);
+    mkEphemeral('ephemeral-mid', 'running', old);
+    mkEphemeral('ephemeral-new', 'completed', recent);
+
+    assert.strictEqual(safeRemoveWorkspaceDir(outsideDir, tmpRoot), false, 'must refuse paths outside workspaces/');
+    assert.ok(fs.existsSync(path.join(outsideDir, 'secret.txt')));
+    assert.strictEqual(safeRemoveWorkspaceDir(goldenDir, tmpRoot), false);
+    assert.ok(fs.existsSync(path.join(goldenDir, 'GOLDEN.md')));
+
+    const ttlResult = prunePublicDemoWorkspaces(fakeEngine, {
+      rootDir: tmpRoot,
+      maxWorkspaces: 20,
+      ttlMs: 30 * 60 * 1000,
+      reserve: 0,
+    });
+    assert.ok(ttlResult.pruned.some((p) => p.name === 'ephemeral-old' && p.reason === 'ttl'));
+    assert.ok(!fs.existsSync(path.join(tmpRoot, 'ephemeral-old')));
+    assert.ok(fs.existsSync(path.join(tmpRoot, 'ephemeral-mid')), 'mid-run must survive TTL');
+    assert.ok(fs.existsSync(goldenDir) && fs.existsSync(catalogDir) && fs.existsSync(refDir));
+    assert.ok(fakeEngine.sessions.has('sess-ephemeral-mid'));
+    assert.ok(!fakeEngine.sessions.has('sess-ephemeral-old'));
+
+    mkEphemeral('ephemeral-a', 'completed', new Date(Date.now() - 5000).toISOString());
+    mkEphemeral('ephemeral-b', 'completed', new Date(Date.now() - 4000).toISOString());
+    mkEphemeral('ephemeral-c', 'completed', new Date(Date.now() - 3000).toISOString());
+    const capResult = prunePublicDemoWorkspaces(fakeEngine, {
+      rootDir: tmpRoot,
+      maxWorkspaces: 2,
+      ttlMs: 0,
+      reserve: 0,
+    });
+    const left = listEphemeralWorkspaceDirs(tmpRoot, fakeEngine);
+    assert.ok(left.length <= 2, `cap must bound ephemeral dirs, got ${left.length}`);
+    assert.ok(left.some((row) => row.midRun), 'running session stays even at cap');
+    assert.ok(capResult.pruned.length >= 1);
+    assert.ok(fs.existsSync(goldenDir) && fs.existsSync(path.join(goldenDir, 'GOLDEN.md')));
+    assert.ok(fs.existsSync(catalogDir) && fs.existsSync(refDir));
+    fs.rmSync(outsideDir, { recursive: true, force: true });
+    console.log('[PASS] 11.9: demo GC respects TTL, cap, mid-run, goldens, and workspaces/ boundary');
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+
+  const beforeGoldens = checksumProtectedWorkspaces();
+  const gcPort = 18768;
+  const gcBase = `http://127.0.0.1:${gcPort}`;
+  const gcEnv = {
+    ...process.env,
+    PORT: String(gcPort),
+    MUSE_SWARM_PUBLIC_DEMO: '1',
+    MUSE_SWARM_OFFLINE: '0',
+    BASETEN_API_KEY: 'sk-live-must-not-be-used-0123456789abcdef',
+    META_API_KEY: 'sk-live-must-not-be-used-0123456789abcdef',
+    MUSE_SWARM_SSE_REPLAY_MS: '0',
+    MUSE_SWARM_PUBLIC_DEMO_POST_LIMIT: '30',
+    MUSE_SWARM_PUBLIC_DEMO_POST_WINDOW_MS: '60000',
+    MUSE_SWARM_PUBLIC_DEMO_MAX_CONCURRENT: '2',
+    MUSE_SWARM_DEMO_MAX_WORKSPACES: '2',
+    MUSE_SWARM_DEMO_WORKSPACE_TTL_MS: '3600000',
+    MUSE_SWARM_DEMO_SWEEP_MS: '600000',
+  };
+  const gcChild = spawn(process.execPath, ['src/server.js'], {
+    cwd: path.resolve(__dirname, '..'),
+    env: gcEnv,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let gcOut = '';
+  gcChild.stdout.on('data', (chunk) => { gcOut += chunk.toString(); });
+  gcChild.stderr.on('data', (chunk) => { gcOut += chunk.toString(); });
+  const gcCreated = [];
+  try {
+    try {
+      await waitForUrl(`${gcBase}/api/health`);
+    } catch (err) {
+      err.message += `\n--- gc demo server output ---\n${gcOut}`;
+      throw err;
+    }
+    for (let i = 0; i < 5; i += 1) {
+      const res = await fetch(`${gcBase}/api/swarm/rework`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scenarioId: 'sprint-priority-engine',
+          projectName: `demo-gc-${i}`,
+          sync: true,
+        }),
+      });
+      assert.strictEqual(res.status, 200, `gc run ${i} should succeed`);
+      const json = await res.json();
+      if (json.session?.workspaceDir) gcCreated.push(json.session.workspaceDir);
+    }
+    const status = await (await fetch(`${gcBase}/api/status`)).json();
+    assert.ok(typeof status.prunedWorkspaces === 'number');
+    assert.ok(status.prunedWorkspaces >= 3, `expected at least 3 prunes after 5 runs with cap 2, got ${status.prunedWorkspaces}`);
+    const ephemeral = listEphemeralWorkspaceDirs(CONFIG.workspacesDir).filter((row) => row.name.startsWith('demo-gc-'));
+    assert.ok(ephemeral.length <= 2, `ephemeral demo-gc dirs must be bounded to 2, got ${ephemeral.length}`);
+    const afterGoldens = checksumProtectedWorkspaces();
+    assert.deepStrictEqual(afterGoldens, beforeGoldens, 'golden and committed reference workspaces must be checksum-identical');
+    console.log('[PASS] 11.10: public-demo workspace cap bounds disk dirs and leaves goldens untouched');
+  } finally {
+    await stopChild(gcChild);
+    for (const dir of gcCreated) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+    for (const row of listEphemeralWorkspaceDirs(CONFIG.workspacesDir)) {
+      if (row.name.startsWith('demo-gc-')) {
+        try { fs.rmSync(row.dir, { recursive: true, force: true }); } catch (_) {}
+      }
     }
   }
 }
