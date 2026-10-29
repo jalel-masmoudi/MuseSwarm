@@ -156,6 +156,19 @@ class BasetenMuseClient {
     let content = '';
 
     if (agentId === 'architect') {
+      const fullUser = messages.find((m) => m.role === 'user')?.content || '';
+      const wantsJsonSpec = /valid json|```json|json code block/i.test(fullUser);
+      if (!wantsJsonSpec) {
+        reasoningContent =
+          'Direct steer for @architect. This is a conversational question, so answer in prose and leave the Kanban JSON plan for the spec-generation prompt.';
+        const question = fullUser.replace(/\s+/g, ' ').trim().slice(0, 160);
+        content =
+          `@architect ${question ? `Regarding "${question}": ` : ''}` +
+          'Keep the roles tight. @architect owns brief.md, runbook.md, and Kanban dependencies, and does not write implementation code. ' +
+          'Hand the isomorphic module, unit tests, and dark-mode index.html to @builder. ' +
+          '@verifier runs node --check and node test.js in the sandbox and sends failures back as a rework. ' +
+          'Stay on zero npm dependencies so the workspace can be verified as-is.';
+      } else {
       reasoningContent =
         'Analyzing software prompt for @architect. Decomposing architecture into brief.md, runbook.md, and parallelizable Kanban tasks (TASK-1A core engine, TASK-1B UI & tests, TASK-2 verification, TASK-3 release synthesis).';
       content = '```json\n' + JSON.stringify({
@@ -208,6 +221,7 @@ class BasetenMuseClient {
         messageToBuilder: '@builder I have published brief.md and runbook.md. Implement TASK-1 with isomorphic exports in app.js, interactive UI in index.html, and assertions in test.js.',
         messageToVerifier: '@verifier Prepare sandbox verification and rubric audit for TASK-2 once @builder completes TASK-1.',
       }, null, 2) + '\n```';
+      }
     } else if (agentId === 'verifier') {
       reasoningContent =
         'Inspecting sandbox execution results (node --check and node test.js) and evaluating code quality rubric across correctness, test coverage, modularity, and UI completeness.';

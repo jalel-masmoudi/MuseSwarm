@@ -402,7 +402,16 @@ const server = http.createServer(async (req, res) => {
     const parts = pathname.replace(/^\/preview\//, '').split('/');
     const sessionId = parts[0];
     const relFile = parts.slice(1).join('/') || 'index.html';
-    const session = engine.sessions.get(sessionId) || Array.from(engine.sessions.values()).find((s) => s.slug === sessionId);
+    let decodedId = sessionId;
+    try {
+      decodedId = decodeURIComponent(sessionId);
+    } catch (_) {}
+    const session =
+      engine.sessions.get(decodedId) ||
+      Array.from(engine.sessions.values()).find((s) => {
+        if (s.id === decodedId || s.slug === decodedId) return true;
+        return Boolean(s.workspaceDir) && path.basename(s.workspaceDir) === decodedId;
+      });
     if (!session) {
       res.writeHead(404);
       return res.end('Session not found');
