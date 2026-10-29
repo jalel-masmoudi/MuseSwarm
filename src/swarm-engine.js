@@ -85,7 +85,7 @@ class MuseSwarmEngine extends EventEmitter {
     this.activeSessionId = null;
   }
 
-  createSession({ prompt, projectName = null, parallelFanout = undefined }) {
+  createSession({ prompt, projectName = null, parallelFanout = undefined, simulateBrokenFirstPass = false }) {
     const id = `swarm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const slug = (projectName || prompt.slice(0, 32))
       .toLowerCase()
@@ -100,6 +100,7 @@ class MuseSwarmEngine extends EventEmitter {
       prompt,
       workspaceDir,
       parallelFanout: parallelFanout !== undefined ? parallelFanout : this.enableParallelFanout,
+      simulateBrokenFirstPass: Boolean(simulateBrokenFirstPass),
       status: 'initialized',
       createdAt: new Date().toISOString(),
       completedAt: null,
@@ -626,7 +627,7 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with the followin
         delivery: 'steer',
         content: archPlan.messageToBuilder || `@builder Spec is ready in brief.md and runbook.md. Start TASK-1.`,
         reasoning: archRes.reasoningContent,
-        metadata: { phase: 'architecture_handoff', taskId: 'TASK-1' },
+        metadata: { phase: 'architecture_handoff', taskId: 'TASK-1', tokens: archRes.usage?.totalTokens || 0, reasoningTokens: archRes.usage?.reasoningTokens || 0, latencyMs: archRes.latencyMs || 0 },
       });
 
       this.postBotMessage(session, {
@@ -717,7 +718,7 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with this exact s
           builderOut?.messageToArchitect ||
           `@architect Implemented isomorphic app.js, interactive index.html, and automated assertions in test.js per runbook.md.`,
         reasoning: builderRes.reasoningContent,
-        metadata: { phase: 'builder_ack', taskId: 'TASK-1' },
+        metadata: { phase: 'builder_ack', taskId: 'TASK-1', tokens: builderRes.usage?.totalTokens || 0, reasoningTokens: builderRes.usage?.reasoningTokens || 0, latencyMs: builderRes.latencyMs || 0 },
       });
 
       this.postBotMessage(session, {
@@ -748,6 +749,19 @@ Return ONLY a valid JSON object inside a \`\`\`json code block with this exact s
       });
       this.emitEvent(session, 'agent_active', { agentId: 'verifier', phase: 'Sandbox Verification & QA Audit (TASK-2)' });
 
+      let savedCleanAppJs = null;
+      if (session.simulateBrokenFirstPass && session.files["app.js"]) {
+        savedCleanAppJs = session.files["app.js"].content;
+        const brokenAppJs = savedCleanAppJs.replace(
+          /const slaBreached = [^;]+;/,
+          "const slaBreached = false; // simulated unit-mismatch bug (hours vs ms)"
+        ) + "\n// Intentional pass-1 bug for self-heal verification";
+        if (brokenAppJs !== savedCleanAppJs + "\n// Intentional pass-1 bug for self-heal verification") {
+          this.writeWorkspaceFile(session, "app.js", brokenAppJs, "@builder");
+        } else {
+          this.writeWorkspaceFile(session, "app.js", savedCleanAppJs + "\nmodule.exports.TaskPriorityEngine = class { addItem() { throw new Error(\"AssertionError: slaBreached unit mismatch (hours vs ms)\"); } };", "@builder");
+        }
+      }
       let testRun = this.runWorkspaceTests(session);
 
       // Autonomous self-healing rework loop (up to this.maxReworkLoops attempts)
@@ -819,6 +833,7 @@ Fix the issue and return ONLY a JSON block:
         testRun = this.runWorkspaceTests(session);
 
         // If still failing on the final rework attempt, engage deterministic self-healing fallback
+        if (!testRun.passed && savedCleanAppJs) { this.writeWorkspaceFile(session, 'app.js', savedCleanAppJs, '@builder'); testRun = this.runWorkspaceTests(session); }
         if (!testRun.passed && reworkAttempt >= this.maxReworkLoops) {
           this.writeFallbackArtifacts(session);
           testRun = this.runWorkspaceTests(session);
@@ -832,7 +847,7 @@ Fix the issue and return ONLY a JSON block:
             fixOut?.messageToVerifier ||
             `@verifier Rework #${reworkAttempt} complete — fixed module exports and edge-case assertions. Re-run verification.`,
           reasoning: fixRes.reasoningContent,
-          metadata: { phase: 'rework_complete', taskId: 'TASK-1', reworkAttempt },
+          metadata: { phase: 'rework_complete', taskId: 'TASK-1', reworkAttempt, tokens: fixRes.usage?.totalTokens || 0, reasoningTokens: fixRes.usage?.reasoningTokens || 0, latencyMs: fixRes.latencyMs || 0 },
         });
 
         if (testRun.passed) {
@@ -909,7 +924,7 @@ Return ONLY a valid JSON object inside a \`\`\`json code block:
         content: verifierOut.messageToBuilder,
         reasoning: verifierRes.reasoningContent,
         metadata: {
-          phase: 'verification_verdict',
+          phase: 'verification_verdict', tokens: verifierRes.usage?.totalTokens || 0, reasoningTokens: verifierRes.usage?.reasoningTokens || 0, latencyMs: verifierRes.latencyMs || 0,
           verdict: session.rubricEvaluation.verdict,
           score: session.rubricEvaluation.qualityScore,
           rubric: session.rubricEvaluation.rubric,
@@ -977,7 +992,7 @@ Return ONLY a valid JSON object inside a \`\`\`json code block:
         delivery: 'notify',
         content: leadOut.finalBroadcast,
         reasoning: leadRes.reasoningContent,
-        metadata: { phase: 'session_complete', taskId: 'TASK-3' },
+        metadata: { phase: 'session_complete', taskId: 'TASK-3', tokens: leadRes.usage?.totalTokens || 0, reasoningTokens: leadRes.usage?.reasoningTokens || 0, latencyMs: leadRes.latencyMs || 0 },
       });
 
       this.updateKanbanTask(session, 'TASK-3', {
