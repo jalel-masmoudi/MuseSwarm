@@ -14,8 +14,8 @@ While Meta's `Muse Code` CLI introduces session messaging and multi-agent workfl
 3. **Autonomous Verification & Self-Healing Rework Loop:** `@verifier` runs `node --check` and `node test.js` inside an isolated workspace sandbox. If any test fails, `@verifier` automatically routes a rework task back to `@builder` with the stack trace until all checks pass.
 4. **First-Class Cursor IDE + Web Studio + CLI Experience:**
    - **Cursor MCP Server (`.cursor/mcp.json`):** Invoke `muse_swarm_cobuild`, `muse_swarm_ask_agent`, or `muse_swarm_list_agents` directly from Cursor Chat/Composer.
-   - **Real-Time Web Dashboard (`http://localhost:4321`):** Watch live bot-to-bot messages, reasoning traces, Kanban card transitions, Baseten 2M TPM telemetry, generated files, and an embedded **Live App Preview**.
-   - **Terminal CLI (`node src/cli.js`):** Run `doctor`, `peers`, or `run --demo` right from Cursor's integrated terminal.
+   - **Real-Time Web Dashboard (`http://localhost:4321`):** Watch live bot-to-bot messages, `reasoning_content` traces, Kanban transitions, and Baseten 2,000,000 TPM telemetry for `meta-models/muse-spark-open-1026`. Judges can one-click three scenarios (self-healing bugfix, token-bucket + circuit breaker, DAG sprint engine), inspect every workspace file, and read the Pass 1 → Pass 2 diff. The Cursor MCP drawer invokes `muse_swarm_list_agents`, `muse_swarm_ask_agent`, `muse_swarm_cobuild`, and `muse_swarm_telemetry` (`POST /api/mcp/invoke` with `{ tool, arguments }`).
+   - **Terminal CLI (`node src/cli.js`):** Run `doctor`, `peers`, `run --demo`, or `run --scenario <id>` right from Cursor's integrated terminal.
 
 ---
 
