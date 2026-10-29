@@ -1,5 +1,9 @@
 node_modules/
 .env
 .env.local
+# Generated swarm workspaces; only the committed live Baseten reference run is tracked.
+workspaces/*
+!workspaces/.gitkeep
+!workspaces/sprint-priority-engine-8z24/
 workspaces/*/node_modules/
 *.log
