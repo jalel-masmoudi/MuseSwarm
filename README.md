@@ -2,15 +2,15 @@
 
 **Meta Global AI Developer Hackathon** • **Track:** Indie Developer Track • **Theme 2:** Push the Frontier
 
-**MuseSwarm** orchestrates four specialized AI coding agents (`@architect`, `@builder`, `@verifier`, and `@lead`) powered by Meta's open-weight **Muse Spark Open** (`meta-models/muse-spark-open-1026`, 816B total / 42B active MoE, 1M context) running on **Baseten** (up to **2,000,000 TPM**), tightly integrated with **Cursor IDE (via MCP + Rules)** and **Meta Muse Code CLI** conventions (`AGENTS.md`, `.agents/memory`, `.muse/hooks.json`).
+**MuseSwarm** orchestrates four specialized AI coding agents (`@architect`, `@builder`, `@verifier`, and `@lead`) powered by Meta's open-weight **Muse Spark Open** (`meta-models/muse-spark-open-1026`) running on **Baseten** (up to **2,000,000 TPM**), tightly integrated with **Cursor IDE (via MCP + Rules)** and MuseSwarm's own conventions (`AGENTS.md`, `.agents/memory`, `.muse/hooks.json`).
 
 ---
 
 ## Why MuseSwarm?
 
-While Meta's `Muse Code` CLI introduces session messaging and multi-agent workflows, native session messaging is currently unavailable on Windows and requires manual multi-terminal coordination. **MuseSwarm** unlocks:
+**MuseSwarm** unlocks:
 1. **Cross-Platform Bot-to-Bot Session Message Bus (`steer`, `queue`, `notify`):** Specialized agents negotiate specifications, hand off tasks, and challenge each other's code with full visibility into `Muse Spark Open`'s internal `reasoning_content`.
-2. **Auditable Kanban Board (`brief.md` + `runbook.md`):** Inspired by Meta's Multi-Agent Orchestration cookbook, `@architect` acts as the Kanban arbiter (writes specs and task dependencies, never touches implementation code), while `@builder` implements and `@verifier` executes real sandbox tests.
+2. **Auditable Kanban Board (`brief.md` + `runbook.md`):** MuseSwarm's own conventions: `@architect` acts as the Kanban arbiter (writes specs and task dependencies, never touches implementation code), while `@builder` implements and `@verifier` executes real sandbox tests.
 3. **Autonomous Verification & Self-Healing Rework Loop:** `@verifier` runs `node --check` and `node test.js` inside an isolated workspace sandbox. If any test fails, `@verifier` automatically routes a rework task back to `@builder` with the stack trace until all checks pass.
 4. **First-Class Cursor IDE + Web Studio + CLI Experience:**
    - **Cursor MCP Server (`.cursor/mcp.json`):** Invoke `muse_swarm_cobuild`, `muse_swarm_ask_agent`, or `muse_swarm_list_agents` directly from Cursor Chat/Composer.
