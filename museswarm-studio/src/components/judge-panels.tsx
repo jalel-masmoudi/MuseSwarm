@@ -14,6 +14,7 @@ import { diffChanged, hasLineDiff, type ReworkFileDiff } from "@/lib/workspace";
 const PIN = [
   "brief.md",
   "runbook.md",
+  "domain.js",
   "solution.js",
   "token-bucket.js",
   "circuit-breaker.js",
@@ -402,7 +403,7 @@ export function McpBridge({
     <div className="space-y-3">
       <p className="text-[11px] text-muted-foreground">
         JSON-RPC tools on the Cursor bridge. Invoke posts <code>{`{ tool, arguments }`}</code> to{" "}
-        <code>POST /api/mcp/invoke</code>. A 404 (route not merged yet) falls back to the live HTTP API and still
+        <code>POST /api/mcp/invoke</code>. If that API is unreachable, the call falls back to the live HTTP API and still
         prints the JSON and latency.
       </p>
       <div className="grid gap-2 sm:grid-cols-2">
