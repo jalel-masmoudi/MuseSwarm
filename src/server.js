@@ -484,6 +484,11 @@ const server = http.createServer(async (req, res) => {
     return res.end(fs.readFileSync(targetPath));
   }
 
+  // Unknown /api/* must never fall through to the SPA HTML.
+  if (pathname === '/api' || pathname.startsWith('/api/')) {
+    return sendJson(res, 404, { ok: false, error: 'not_found', path: pathname });
+  }
+
   // Serve static files from museswarm-studio/dist first, then /public.
   // Docker images omit dist (see .dockerignore) so hosted demo serves public/,
   // which the Studio bundle PR rebuilds. Dist is never copied stale into the image.
