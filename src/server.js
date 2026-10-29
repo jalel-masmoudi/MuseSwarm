@@ -2,7 +2,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { CONFIG } = require('./config');
-const { MuseSwarmEngine, AGENT_PROFILES } = require('./swarm-engine');
+const { executeToolCall } = require('./mcp-server');
+const { MuseSwarmEngine, AGENT_PROFILES, SCENARIO_PRESETS, serializeScenarios } = require('./swarm-engine');
 
 const engine = new MuseSwarmEngine();
 const sseClients = new Set();
@@ -45,6 +46,8 @@ function loadExistingWorkspaces() {
           saved.verificationRuns = saved.verificationRuns || [];
           saved.messages = saved.messages || [];
           saved.kanban = saved.kanban || [];
+          saved.reworkDiffs = saved.reworkDiffs || [];
+          saved.fileHistory = saved.fileHistory || {};
           engine.sessions.set(saved.id, saved);
           engine.activeSessionId = saved.id;
         } catch (_) {}
@@ -80,6 +83,8 @@ function loadExistingWorkspaces() {
             verificationRuns: [],
             parallelTasksRun: [],
             reworkCycles: 0,
+            reworkDiffs: [],
+            fileHistory: {},
             ObserverAdvisories: [],
             telemetry: getEffectiveTelemetry(),
           };
@@ -133,6 +138,29 @@ function readJsonBody(req) {
     });
     req.on('error', reject);
   });
+}
+
+function findSession(sessionId) {
+  if (!sessionId) {
+    return engine.activeSessionId ? engine.sessions.get(engine.activeSessionId) || null : null;
+  }
+  const decoded = decodeURIComponent(sessionId);
+  return (
+    engine.sessions.get(decoded) ||
+    Array.from(engine.sessions.values()).find((s) => s.slug === decoded || s.id === decoded) ||
+    null
+  );
+}
+
+function sessionDiffPayload(session) {
+  return {
+    ok: true,
+    sessionId: session.id,
+    scenarioId: session.scenarioId || null,
+    reworkCycles: session.reworkCycles || 0,
+    reworkDiffs: session.reworkDiffs || [],
+    fileHistory: session.fileHistory || {},
+  };
 }
 
 function sendJson(res, status, data) {
@@ -213,15 +241,63 @@ const server = http.createServer(async (req, res) => {
       telemetry: getEffectiveTelemetry(),
       sessions,
       activeSessionId: engine.activeSessionId,
+      scenarios: serializeScenarios(),
     });
+  }
+
+  if (pathname === '/api/scenarios' && req.method === 'GET') {
+    return sendJson(res, 200, {
+      ok: true,
+      scenarios: serializeScenarios(),
+    });
+  }
+
+  const sessionDiffMatch = pathname.match(/^\/api\/session\/([^/]+)\/diffs$/);
+  if ((sessionDiffMatch || pathname === '/api/swarm/diffs') && req.method === 'GET') {
+    const requestedId = sessionDiffMatch ? sessionDiffMatch[1] : url.searchParams.get('sessionId');
+    const session = findSession(requestedId);
+    if (!session) return sendJson(res, 404, { ok: false, error: 'Session not found' });
+    return sendJson(res, 200, sessionDiffPayload(session));
+  }
+
+  if (pathname === '/api/mcp/invoke' && req.method === 'POST') {
+    const started = Date.now();
+    try {
+      const body = await readJsonBody(req);
+      const tool = body.tool || body.name;
+      const args = body.arguments || body.args || {};
+      if (!tool) return sendJson(res, 400, { ok: false, error: 'tool (or name) is required' });
+      const outcome = await executeToolCall(tool, args, engine);
+      const latencyMs = Date.now() - started;
+      const rpcId = body.id !== undefined ? body.id : 1;
+      if (outcome.error) {
+        return sendJson(res, 200, {
+          ok: false,
+          tool,
+          latencyMs,
+          response: { jsonrpc: '2.0', id: rpcId, error: outcome.error },
+        });
+      }
+      return sendJson(res, 200, {
+        ok: outcome.result?.isError ? false : true,
+        tool,
+        latencyMs,
+        response: { jsonrpc: '2.0', id: rpcId, result: outcome.result },
+      });
+    } catch (err) {
+      return sendJson(res, 500, { ok: false, error: err.message, latencyMs: Date.now() - started });
+    }
   }
 
   // Trigger a new multi-agent swarm run (supports simulateBrokenFirstPass for self-heal rework demo)
   if ((pathname === '/api/swarm/run' || pathname === '/api/swarm/rework') && req.method === 'POST') {
     try {
       const body = await readJsonBody(req);
+      const scenarioId = body.scenarioId || body.scenario || null;
+      const preset = SCENARIO_PRESETS.find((item) => item.id === scenarioId);
       const prompt = (
         body.prompt ||
+        preset?.prompt ||
         (pathname === '/api/swarm/rework'
           ? 'Build a Real-Time Engineering Sprint & Incident Priority Engine with SLA breach detection and automated tests.'
           : '')
@@ -235,6 +311,7 @@ const server = http.createServer(async (req, res) => {
         prompt,
         projectName: body.projectName,
         simulateBrokenFirstPass,
+        scenarioId,
       });
 
       if (body.sync === true || body.async === false) {
@@ -248,6 +325,7 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, {
         ok: true,
         simulateBrokenFirstPass,
+        scenarioId: session.scenarioId,
         session: engine.serializeSession(session),
       });
     } catch (err) {
@@ -324,7 +402,16 @@ const server = http.createServer(async (req, res) => {
     const parts = pathname.replace(/^\/preview\//, '').split('/');
     const sessionId = parts[0];
     const relFile = parts.slice(1).join('/') || 'index.html';
-    const session = engine.sessions.get(sessionId) || Array.from(engine.sessions.values()).find((s) => s.slug === sessionId);
+    let decodedId = sessionId;
+    try {
+      decodedId = decodeURIComponent(sessionId);
+    } catch (_) {}
+    const session =
+      engine.sessions.get(decodedId) ||
+      Array.from(engine.sessions.values()).find((s) => {
+        if (s.id === decodedId || s.slug === decodedId) return true;
+        return Boolean(s.workspaceDir) && path.basename(s.workspaceDir) === decodedId;
+      });
     if (!session) {
       res.writeHead(404);
       return res.end('Session not found');

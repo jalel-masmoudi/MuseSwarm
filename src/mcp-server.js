@@ -52,6 +52,15 @@ const TOOLS = [
           type: 'string',
           description: 'Optional short slug for the output workspace folder',
         },
+        scenarioId: {
+          type: 'string',
+          enum: ['sprint-priority-engine', 'feature-flag-rollout', 'oncall-fairness-scheduler'],
+          description: 'Optional judge scenario preset to materialize as a multi-file workspace',
+        },
+        simulateBrokenFirstPass: {
+          type: 'boolean',
+          description: 'Inject the scenario Pass 1 fault so @verifier and @builder run the self-heal diff loop',
+        },
       },
       required: ['prompt'],
     },
@@ -80,6 +89,137 @@ function sendError(id, code, message) {
   process.stdout.write(payload + '\n');
 }
 
+async function executeToolCall(toolName, args = {}, eng = engine) {
+  const active = eng || engine;
+  try {
+    if (toolName === 'muse_swarm_list_agents') {
+      return {
+        result: {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  model: CONFIG.modelId,
+                  endpoint: CONFIG.basetenBaseUrl,
+                  agents: AGENT_PROFILES,
+                  telemetry: active.client.getTelemetry(),
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        },
+      };
+    }
+
+    if (toolName === 'muse_swarm_telemetry') {
+      const benchmarks = Array.from(active.sessions.values())
+        .map((s) => s.benchmark)
+        .filter(Boolean);
+      return {
+        result: {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  telemetry: active.client.getTelemetry(),
+                  sessionsCount: active.sessions.size,
+                  benchmarks,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        },
+      };
+    }
+
+    if (toolName === 'muse_swarm_ask_agent') {
+      const agentId = args.agent || 'architect';
+      const profile = AGENT_PROFILES[agentId] || AGENT_PROFILES.architect;
+      const res = await active.client.chatCompletion({
+        agentId,
+        maxTokens: 2048,
+        messages: [
+          {
+            role: 'system',
+            content: `You are ${profile.handle} (${profile.name} — ${profile.role}) in a MuseSwarm multi-agent team powered by Meta Muse Spark Open.`,
+          },
+          { role: 'user', content: args.message || 'Status check' },
+        ],
+      });
+      return {
+        result: {
+          content: [
+            {
+              type: 'text',
+              text:
+                `[${profile.handle} | ${res.latencyMs}ms | ${res.usage.totalTokens} tokens]\n\n` +
+                (res.reasoningContent ? `> **Reasoning Trace:** ${res.reasoningContent.slice(0, 400)}...\n\n` : '') +
+                res.content,
+            },
+          ],
+        },
+      };
+    }
+
+    if (toolName === 'muse_swarm_cobuild') {
+      const session = active.createSession({
+        prompt: args.prompt,
+        projectName: args.projectName,
+        scenarioId: args.scenarioId,
+        simulateBrokenFirstPass: Boolean(args.simulateBrokenFirstPass),
+      });
+      await active.executeSwarm(session);
+      const serialized = active.serializeSession(session);
+      return {
+        result: {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  sessionId: serialized.id,
+                  status: serialized.status,
+                  scenarioId: serialized.scenarioId,
+                  workspaceDir: serialized.workspaceDir,
+                  filesWritten: serialized.files.map((f) => f.path),
+                  reworkDiffs: serialized.reworkDiffs,
+                  rubricEvaluation: serialized.rubricEvaluation,
+                  benchmark: serialized.benchmark,
+                  messagesExchanged: serialized.messages.map((m) => ({
+                    from: m.from,
+                    to: m.to,
+                    delivery: m.delivery,
+                    content: m.content,
+                  })),
+                  verificationPassed: serialized.verificationRuns.slice(-1)[0]?.passed ?? false,
+                  telemetry: serialized.telemetry,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        },
+      };
+    }
+
+    return { error: { code: -32601, message: `Unknown tool: ${toolName}` } };
+  } catch (err) {
+    return {
+      result: {
+        isError: true,
+        content: [{ type: 'text', text: `Error executing ${toolName}: ${err.message}` }],
+      },
+    };
+  }
+}
+
 async function handleRequest(req) {
   const { id, method, params } = req;
 
@@ -105,122 +245,9 @@ async function handleRequest(req) {
   }
 
   if (method === 'tools/call') {
-    const toolName = params?.name;
-    const args = params?.arguments || {};
-
-    try {
-      if (toolName === 'muse_swarm_list_agents') {
-        return sendResponse(id, {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(
-                {
-                  model: CONFIG.modelId,
-                  endpoint: CONFIG.basetenBaseUrl,
-                  agents: AGENT_PROFILES,
-                  telemetry: engine.client.getTelemetry(),
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        });
-      }
-
-      if (toolName === 'muse_swarm_telemetry') {
-        const benchmarks = Array.from(engine.sessions.values())
-          .map((s) => s.benchmark)
-          .filter(Boolean);
-        return sendResponse(id, {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(
-                {
-                  telemetry: engine.client.getTelemetry(),
-                  sessionsCount: engine.sessions.size,
-                  benchmarks,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        });
-      }
-
-      if (toolName === 'muse_swarm_ask_agent') {
-        const agentId = args.agent || 'architect';
-        const profile = AGENT_PROFILES[agentId] || AGENT_PROFILES.architect;
-        const res = await engine.client.chatCompletion({
-          agentId,
-          maxTokens: 2048,
-          messages: [
-            {
-              role: 'system',
-              content: `You are ${profile.handle} (${profile.name} — ${profile.role}) in a MuseSwarm multi-agent team powered by Meta Muse Spark Open.`,
-            },
-            { role: 'user', content: args.message || 'Status check' },
-          ],
-        });
-        return sendResponse(id, {
-          content: [
-            {
-              type: 'text',
-              text:
-                `[${profile.handle} | ${res.latencyMs}ms | ${res.usage.totalTokens} tokens]\n\n` +
-                (res.reasoningContent ? `> **Reasoning Trace:** ${res.reasoningContent.slice(0, 400)}...\n\n` : '') +
-                res.content,
-            },
-          ],
-        });
-      }
-
-      if (toolName === 'muse_swarm_cobuild') {
-        const session = engine.createSession({
-          prompt: args.prompt,
-          projectName: args.projectName,
-        });
-        await engine.executeSwarm(session);
-        const serialized = engine.serializeSession(session);
-        return sendResponse(id, {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(
-                {
-                  sessionId: serialized.id,
-                  status: serialized.status,
-                  workspaceDir: serialized.workspaceDir,
-                  filesWritten: serialized.files.map((f) => f.path),
-                  rubricEvaluation: serialized.rubricEvaluation,
-                  benchmark: serialized.benchmark,
-                  messagesExchanged: serialized.messages.map((m) => ({
-                    from: m.from,
-                    to: m.to,
-                    delivery: m.delivery,
-                    content: m.content,
-                  })),
-                  verificationPassed: serialized.verificationRuns.slice(-1)[0]?.passed ?? false,
-                  telemetry: serialized.telemetry,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        });
-      }
-
-      return sendError(id, -32601, `Unknown tool: ${toolName}`);
-    } catch (err) {
-      return sendResponse(id, {
-        isError: true,
-        content: [{ type: 'text', text: `Error executing ${toolName}: ${err.message}` }],
-      });
-    }
+    const outcome = await executeToolCall(params?.name, params?.arguments || {});
+    if (outcome.error) return sendError(id, outcome.error.code, outcome.error.message);
+    return sendResponse(id, outcome.result);
   }
 
   if (id !== undefined) {
@@ -244,4 +271,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { TOOLS, handleRequest, engine };
+module.exports = { TOOLS, handleRequest, executeToolCall, engine };
