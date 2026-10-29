@@ -102,3 +102,17 @@
   scrollbar-width: thin;
   scrollbar-color: oklch(1 0 0 / 15%) transparent;
 }
+
+@utility diff-add {
+  background: oklch(0.77 0.2 150 / 16%);
+}
+
+@utility diff-del {
+  background: oklch(0.65 0.22 22 / 18%);
+}
+
+@utility judge-proof {
+  background:
+    linear-gradient(120deg, oklch(0.62 0.2 255 / 14%), oklch(0.77 0.2 150 / 8%) 42%, oklch(0.79 0.17 70 / 10%)),
+    var(--color-glass);
+}
