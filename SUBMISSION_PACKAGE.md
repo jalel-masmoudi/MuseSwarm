@@ -29,7 +29,7 @@
 3. **Technical Depth & Execution (20%):**
    - **Resilient Baseten Inference Client (`src/baseten-client.js`):** 45s `AbortController` timeouts, exponential backoff + jitter + `Retry-After` handling on HTTP 408/429/5xx, rolling 60s TPM/RPM window tracking, p50/p95 latency percentiles, and per-agent token breakdown.
    - **Dependency-Aware Kanban & Parallel Fan-Out (`src/swarm-engine.js`):** Supports `steer`, `queue`, and `notify` delivery modes, DAG task dependencies (`dependsOn`), parallel task fan-out (`runParallelTasks`), a 100-point automated quality rubric, and autonomous `@verifier -> @builder` self-healing rework loops.
-   - **Triple Interface:** Terminal CLI (`node src/cli.js doctor | peers | run --demo | benchmark`), Real-Time SSE Web Studio (`http://localhost:4321` with live bot chat, reasoning traces, Kanban board, and embedded live app preview), and a 4-tool **Cursor MCP Server** (`src/mcp-server.js`).
+   - **Triple Interface:** Terminal CLI (`node src/cli.js doctor | peers | run --demo | benchmark`), Real-Time SSE Web Studio (`http://localhost:4321` with judge scenario presets, a Pass 1 → Pass 2 self-healing diff, multi-file artifacts, live `reasoning_content`, and a Cursor MCP bridge for `muse_swarm_status` / `muse_swarm_run` / `muse_swarm_steer` / `muse_swarm_rework`), and a 4-tool **Cursor MCP Server** (`src/mcp-server.js`).
 4. **Live Verification Results (25%):**
    - **Rubric Score:** `98/100 (VERIFIED_PASS)`
    - **Sandbox Checks:** `4/4` checks passed (`syntax:app.js`, `syntax:test.js`, `runtime:test.js` 5/5 suites / 8 assertions, `artifact:index.html`) in `675ms`.
