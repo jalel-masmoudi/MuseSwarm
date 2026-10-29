@@ -2,7 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { BasetenMuseClient, computePercentile } = require('./baseten-client');
-const { MuseSwarmEngine, AGENT_PROFILES, extractJsonBlock } = require('./swarm-engine');
+const { MuseSwarmEngine, AGENT_PROFILES, extractJsonBlock, SCENARIO_PRESETS, buildReworkDiff } = require('./swarm-engine');
 const { TOOLS } = require('./mcp-server');
 const { server, normalizeAgentId } = require('./server');
 
@@ -218,6 +218,19 @@ async function testSelfHealingReworkLoop() {
   assert.strictEqual(session.verificationRuns[1].passed, true, 'Second verification run after rework must pass');
   console.log('[PASS] 3.1: @verifier detected failing assertion, routed stack trace to @builder, and verified fix');
 
+  const appDiff = session.reworkDiffs.find((entry) => entry.path === 'app.js');
+  assert.ok(appDiff, 'Real rework must record an app.js unified diff');
+  const removed = appDiff.diff.split('\n').filter((line) => line.startsWith('-') && !line.startsWith('---'));
+  const added = appDiff.diff.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++'));
+  assert.ok(removed.some((line) => line.includes('a - b')), 'Diff must remove the broken pass-1 line');
+  assert.ok(added.some((line) => line.includes('a + b')), 'Diff must add the self-healed line');
+  assert.ok(appDiff.beforeSnippet && appDiff.afterSnippet, 'Diff must include before/after snippets');
+  assert.ok(session.fileHistory['app.js'].length >= 2, 'fileHistory must snapshot each app.js write');
+  assert.strictEqual(session.files['app.js'].diff, appDiff.diff, 'Per-file diff string must match the rework diff');
+  const serializedRework = engine.serializeSession(session);
+  assert.ok(serializedRework.reworkDiffs.length >= 1 && serializedRework.fileHistory['app.js']);
+  console.log('[PASS] 3.2: Pass 1 -> Pass 2 unified diff and fileHistory recorded on a real rework');
+
   fs.rmSync(session.workspaceDir, { recursive: true, force: true });
 }
 
@@ -239,7 +252,18 @@ async function testServerEndpoints() {
     assert.strictEqual(statusRes.status, 200);
     const statusJson = await statusRes.json();
     assert.strictEqual(statusJson.ok, true);
-    console.log('[PASS] 4.1: GET /api/status returns agents, telemetry, and sessions');
+    assert.strictEqual(statusJson.scenarios.length, 3, 'GET /api/status must include the 3 scenario presets');
+    console.log('[PASS] 4.1: GET /api/status returns agents, telemetry, sessions, and scenarios');
+
+    const scenRes = await fetch(`${baseUrl}/api/scenarios`);
+    assert.strictEqual(scenRes.status, 200);
+    const scenJson = await scenRes.json();
+    assert.deepStrictEqual(
+      scenJson.scenarios.map((item) => item.id),
+      ['sprint-priority-engine', 'feature-flag-rollout', 'oncall-fairness-scheduler']
+    );
+    assert.ok(scenJson.scenarios.every((item) => item.artifacts['domain.js'] && item.artifacts['index.html']));
+    console.log('[PASS] 4.1b: GET /api/scenarios returns the 3 presets and their artifacts');
 
     const telRes = await fetch(`${baseUrl}/api/telemetry`);
     assert.strictEqual(telRes.status, 200);
@@ -264,16 +288,51 @@ async function testServerEndpoints() {
       body: JSON.stringify({
         prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
         projectName: 'api-rework-test',
+        scenarioId: 'sprint-priority-engine',
         sync: true,
       }),
     });
     assert.strictEqual(rwRes.status, 200);
     const rwJson = await rwRes.json();
     assert.strictEqual(rwJson.ok, true);
+    assert.strictEqual(rwJson.scenarioId, 'sprint-priority-engine');
     assert.strictEqual(rwJson.session.reworkCycles, 1, 'Should record 1 rework cycle');
     assert.strictEqual(rwJson.session.verificationRuns[0].passed, false, 'Fault-injected first pass must fail');
     assert.strictEqual(rwJson.session.verificationRuns.slice(-1)[0].passed, true, 'Self-healed rework pass must succeed');
+    assert.ok(rwJson.session.reworkDiffs.length >= 1, 'Rework response must include unified diffs');
     console.log('[PASS] 4.4: POST /api/swarm/rework executes fault injection -> self-healing verification');
+
+    const diffRes = await fetch(`${baseUrl}/api/session/${rwJson.session.id}/diffs`);
+    assert.strictEqual(diffRes.status, 200);
+    const diffJson = await diffRes.json();
+    assert.ok(diffJson.reworkDiffs.length >= 1);
+    assert.ok(diffJson.fileHistory['domain.js'].length >= 2);
+    const swarmDiffRes = await fetch(`${baseUrl}/api/swarm/diffs?sessionId=${encodeURIComponent(rwJson.session.id)}`);
+    assert.strictEqual(swarmDiffRes.status, 200);
+    const swarmDiffJson = await swarmDiffRes.json();
+    assert.strictEqual(swarmDiffJson.reworkDiffs.length, diffJson.reworkDiffs.length);
+    console.log('[PASS] 4.5: GET /api/session/:id/diffs and /api/swarm/diffs return reworkDiffs and fileHistory');
+
+    const mcpRes = await fetch(`${baseUrl}/api/mcp/invoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool: 'muse_swarm_list_agents', arguments: {} }),
+    });
+    assert.strictEqual(mcpRes.status, 200);
+    const mcpJson = await mcpRes.json();
+    assert.strictEqual(mcpJson.ok, true);
+    assert.strictEqual(mcpJson.response.jsonrpc, '2.0');
+    assert.ok(typeof mcpJson.latencyMs === 'number');
+    assert.ok(mcpJson.response.result.content[0].text.includes('architect'));
+    const mcpNameRes = await fetch(`${baseUrl}/api/mcp/invoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'muse_swarm_telemetry', args: {} }),
+    });
+    const mcpNameJson = await mcpNameRes.json();
+    assert.strictEqual(mcpNameJson.ok, true);
+    assert.ok(mcpNameJson.response.result.content[0].text.includes('telemetry'));
+    console.log('[PASS] 4.6: POST /api/mcp/invoke returns the MCP JSON-RPC result and latency');
 
     if (rwJson.session?.workspaceDir && fs.existsSync(rwJson.session.workspaceDir)) {
       fs.rmSync(rwJson.session.workspaceDir, { recursive: true, force: true });
@@ -302,6 +361,7 @@ async function runFullSwarmE2E() {
   assert.ok(session.files['index.html'], 'Should generate index.html');
   assert.ok(session.files['test.js'], 'Should generate test.js');
   assert.ok(session.files['README.md'], 'Should generate README.md');
+  assert.ok(session.files['domain.js'], 'Should generate domain.js for the sprint scenario');
   assert.ok(session.files['benchmark.json'], 'Should generate benchmark.json');
   assert.ok(fs.existsSync(path.join(session.workspaceDir, '.session.json')), 'Should persist .session.json snapshot');
 
@@ -311,10 +371,86 @@ async function runFullSwarmE2E() {
   assert.strictEqual(TOOLS.length, 4, 'MCP server should expose 4 tools');
 
   console.log('[PASS] 5.1: Full 4-agent workflow (@architect -> @builder -> @verifier -> @lead) & benchmark.json verified');
-  console.log('\n✔ ALL UNIT, API & E2E ASSERTIONS PASSED!');
   console.log('Workspace:', session.workspaceDir);
   console.log('Rubric Score:', `${session.rubricEvaluation.qualityScore}/100 (${session.rubricEvaluation.verdict})`);
   console.log('Telemetry:', JSON.stringify(engine.client.getTelemetry()));
+}
+
+async function testScenarioPresetsAndPassDiffs() {
+  console.log('\n--- [Suite 6] Judge Scenario Presets & Pass 1 -> Pass 2 Diff Explorer ---');
+
+  assert.strictEqual(SCENARIO_PRESETS.length, 3);
+  assert.deepStrictEqual(
+    SCENARIO_PRESETS.map((preset) => preset.id),
+    ['sprint-priority-engine', 'feature-flag-rollout', 'oncall-fairness-scheduler']
+  );
+
+  const sample = buildReworkDiff({
+    filePath: 'domain.js',
+    before: 'const slaBreached = false; // pass-1 fault\n',
+    after: 'const slaBreached = elapsedMinutes >= slaMinutes;\n',
+    author: '@builder',
+    reworkAttempt: 1,
+  });
+  assert.strictEqual(sample.passFrom, 1);
+  assert.strictEqual(sample.passTo, 2);
+  assert.ok(sample.diff.includes('\n-const slaBreached = false;'));
+  assert.ok(sample.diff.includes('\n+const slaBreached = elapsedMinutes >= slaMinutes;'));
+  assert.ok(sample.beforeSnippet && sample.afterSnippet);
+  console.log('[PASS] 6.1: Unified diff marks removed broken lines and added healed lines');
+
+  const detectEngine = new MuseSwarmEngine();
+  const detected = detectEngine.createSession({
+    prompt: 'Build an On-Call Rotation & Burnout Fairness Scheduler for follow-the-sun handoffs',
+    projectName: 'detect-oncall',
+  });
+  assert.strictEqual(detected.scenarioId, 'oncall-fairness-scheduler');
+  const explicit = detectEngine.createSession({
+    prompt: 'unrelated prompt',
+    scenarioId: 'feature-flag-rollout',
+    projectName: 'explicit-flag',
+  });
+  assert.strictEqual(explicit.scenarioId, 'feature-flag-rollout');
+  fs.rmSync(detected.workspaceDir, { recursive: true, force: true });
+  fs.rmSync(explicit.workspaceDir, { recursive: true, force: true });
+  console.log('[PASS] 6.2: scenarioId is explicit or auto-detected from the prompt');
+
+  for (const preset of SCENARIO_PRESETS) {
+    const engine = new MuseSwarmEngine();
+    const session = engine.createSession({
+      prompt: preset.prompt,
+      scenarioId: preset.id,
+      projectName: `${preset.id}-e2e`,
+      simulateBrokenFirstPass: true,
+    });
+    try {
+      await engine.executeSwarm(session);
+      for (const relPath of ['brief.md', 'runbook.md', 'domain.js', 'app.js', 'test.js', 'index.html', 'README.md', 'benchmark.json']) {
+        assert.ok(session.files[relPath], `${preset.id} should write ${relPath}`);
+      }
+      assert.ok(session.files['index.html'].content.includes('#0b0f19'), `${preset.id} preview should be dark-mode`);
+      assert.ok(/<button/i.test(session.files['index.html'].content), `${preset.id} preview should be interactive`);
+      assert.strictEqual(session.verificationRuns[0].passed, false, `${preset.id} pass 1 must fail`);
+      assert.strictEqual(session.verificationRuns[session.verificationRuns.length - 1].passed, true, `${preset.id} healed pass must succeed`);
+      assert.ok(session.reworkCycles >= 1, `${preset.id} must record a rework cycle`);
+      const diff = session.reworkDiffs.find((entry) => entry.path === 'domain.js');
+      assert.ok(diff, `${preset.id} must diff domain.js`);
+      const removed = diff.diff.split('\n').filter((line) => line.startsWith('-') && !line.startsWith('---'));
+      const added = diff.diff.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++'));
+      assert.ok(removed.some((line) => line.includes('pass-1 fault')), `${preset.id} diff must remove the broken line`);
+      assert.ok(added.length >= 1, `${preset.id} diff must add the healed line`);
+      assert.ok(diff.beforeSnippet && diff.afterSnippet);
+      assert.ok(session.fileHistory['domain.js'].length >= 3, `${preset.id} fileHistory must keep clean, broken, and healed snapshots`);
+      const benchmark = JSON.parse(session.files['benchmark.json'].content);
+      assert.ok(benchmark.reworkDiffs.length >= 1, `${preset.id} benchmark.json must include reworkDiffs`);
+      assert.ok(benchmark.fileHistory['domain.js'], `${preset.id} benchmark.json must include fileHistory`);
+      const serialized = engine.serializeSession(session);
+      assert.ok(serialized.reworkDiffs.length >= 1 && serialized.fileHistory['domain.js']);
+      console.log(`[PASS] 6.3 ${preset.id}: multi-file workspace, sandbox green, Pass 1 -> Pass 2 diff`);
+    } finally {
+      fs.rmSync(session.workspaceDir, { recursive: true, force: true });
+    }
+  }
 }
 
 async function main() {
@@ -324,6 +460,8 @@ async function main() {
   await testSelfHealingReworkLoop();
   await testServerEndpoints();
   await runFullSwarmE2E();
+  await testScenarioPresetsAndPassDiffs();
+  console.log('\n✔ ALL UNIT, API & E2E ASSERTIONS PASSED!');
 }
 
 main().catch((err) => {
