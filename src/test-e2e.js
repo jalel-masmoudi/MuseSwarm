@@ -429,6 +429,20 @@ async function testServerEndpoints() {
     assert.ok(mcpNameJson.response.result.content[0].text.includes('telemetry'));
     console.log('[PASS] 4.6: POST /api/mcp/invoke returns the MCP JSON-RPC result and latency');
 
+    const missingRes = await fetch(`${baseUrl}/api/does-not-exist`);
+    assert.strictEqual(missingRes.status, 404);
+    assert.ok(String(missingRes.headers.get('content-type') || '').includes('application/json'));
+    const missingJson = await missingRes.json();
+    assert.strictEqual(missingJson.ok, false);
+    assert.strictEqual(missingJson.error, 'not_found');
+    assert.strictEqual(missingJson.path, '/api/does-not-exist');
+    const rootRes = await fetch(`${baseUrl}/`);
+    assert.strictEqual(rootRes.status, 200);
+    assert.ok(String(rootRes.headers.get('content-type') || '').includes('text/html'));
+    const rootBody = await rootRes.text();
+    assert.ok(rootBody.includes('<div id="root">') || rootBody.toLowerCase().includes('<!doctype html'));
+    console.log('[PASS] 4.7: unmatched /api/* returns JSON 404; GET / still serves HTML');
+
     if (rwJson.session?.workspaceDir && fs.existsSync(rwJson.session.workspaceDir)) {
       fs.rmSync(rwJson.session.workspaceDir, { recursive: true, force: true });
     }
