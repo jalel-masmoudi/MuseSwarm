@@ -144,6 +144,8 @@ async function testBasetenClientTelemetryAndRetry() {
   assert.strictEqual(second.totalCalls, 1);
   assert.strictEqual(all.totalCalls, 2);
   assert.strictEqual(second.agentBreakdown.verifier.calls, 1);
+  assert.strictEqual(second.latencies.length, 1);
+  assert.strictEqual(all.totalCalls, mid.totalCalls + second.totalCalls);
   console.log('[PASS] 1.4: telemetrySince scopes calls to the snapshot window');
 }
 
@@ -818,7 +820,7 @@ async function testLeadRetryBuilderBudgetAndSessionTelemetry() {
     }
     if (opts.agentId === 'builder' && !user.includes('Rework Attempt #')) {
       builderBuildCalls += 1;
-      assert.strictEqual(opts.maxTokens, 16000);
+      assert.strictEqual(opts.maxTokens, 32000);
       assert.strictEqual(opts.timeoutMs, CONFIG.longRequestTimeoutMs);
       assert.strictEqual(opts.reasoningEffort, 'low');
       assert.ok(/"files":\s*\[/.test(user), 'initial build prompt asks for a files array');
@@ -876,12 +878,17 @@ async function testLeadRetryBuilderBudgetAndSessionTelemetry() {
     assert.strictEqual(session.files['README.md'].source, 'model');
     assert.ok(session.files['README.md'].content.includes('From @lead'));
     console.log('[PASS] 9.1: @lead retries once on finishReason=length with empty content and records both replies');
-    console.log('[PASS] 9.2: @builder initial build uses 16000 tokens, reasoning_effort=low, 120s timeout, compact files array');
+    console.log('[PASS] 9.2: @builder initial build uses 32000 tokens, reasoning_effort=low, 120s timeout, compact files array');
   } finally {
     fs.rmSync(session.workspaceDir, { recursive: true, force: true });
   }
 
   const telEngine = new MuseSwarmEngine({ offline: true, allowOfflineFallback: true });
+  const origRecord = telEngine.client.recordUsage.bind(telEngine.client);
+  let latencyWave = 0;
+  telEngine.client.recordUsage = (usage, _latencyMs, agentId, isSimulated) => {
+    origRecord(usage, latencyWave === 0 ? 9000 : 40, agentId, isSimulated);
+  };
   const runOnce = async (name) => {
     const s = telEngine.createSession({
       prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
@@ -895,18 +902,111 @@ async function testLeadRetryBuilderBudgetAndSessionTelemetry() {
     }
   };
   const first = await runOnce('tel-session-a');
+  latencyWave = 1;
   const second = await runOnce('tel-session-b');
   const processTel = telEngine.client.getTelemetry();
   assert.ok(first.telemetry.totalCalls > 0 && second.telemetry.totalCalls > 0);
   assert.strictEqual(first.telemetry.totalCalls, second.telemetry.totalCalls, 'each session should report its own call count');
+  assert.strictEqual(first.telemetry.latencies.length, first.telemetry.totalCalls);
+  assert.strictEqual(second.telemetry.latencies.length, second.telemetry.totalCalls);
+  assert.ok(first.telemetry.latencies.every((ms) => ms === 9000), 'session 1 latencies are only its own 9000ms calls');
+  assert.ok(second.telemetry.latencies.every((ms) => ms === 40), 'session 2 latencies must not include session 1');
+  assert.strictEqual(first.telemetry.p95LatencyMs, 9000);
+  assert.strictEqual(second.telemetry.p95LatencyMs, 40, "session 2's p95 must not leak session 1's 9000ms");
+  assert.strictEqual(second.telemetry.maxLatencyMs, 40);
+  assert.ok(!second.telemetry.latencies.includes(9000));
   assert.strictEqual(
     processTel.totalCalls,
     first.telemetry.totalCalls + second.telemetry.totalCalls,
     'process-wide totals remain the sum of both sessions'
   );
   assert.notStrictEqual(second.telemetry.totalCalls, processTel.totalCalls);
-  assert.ok(first.telemetry.p50LatencyMs > 0 && second.telemetry.p50LatencyMs > 0);
-  console.log('[PASS] 9.3: back-to-back sessions scope telemetry in benchmark.json; process totals stay separate');
+  console.log('[PASS] 9.3: back-to-back sessions scope call counts, latencies, and p95; process totals stay separate');
+
+  const artifacts = buildScenarioArtifacts('sprint-priority-engine');
+  const modelEngine = new MuseSwarmEngine({ offline: true, allowOfflineFallback: true });
+  const modelOrig = modelEngine.client.chatCompletion.bind(modelEngine.client);
+  modelEngine.client.chatCompletion = async (opts) => {
+    const user = opts.messages[opts.messages.length - 1].content;
+    if (opts.agentId === 'builder' && !user.includes('Rework Attempt #')) {
+      return {
+        id: 'builder-live-files',
+        model: 'meta-models/muse-spark-open-1026',
+        simulated: false,
+        content: JSON.stringify({
+          messageToArchitect: '@architect implemented.',
+          messageToVerifier: '@verifier please run test.js.',
+          files: [
+            { path: 'app.js', content: `${artifacts['app.js']}\n// model-built app.js\n` },
+            { path: 'index.html', content: artifacts['index.html'] },
+            { path: 'test.js', content: artifacts['test.js'] },
+          ],
+        }),
+        reasoningContent: '',
+        finishReason: 'stop',
+        usage: { promptTokens: 20, completionTokens: 40, totalTokens: 60, reasoningTokens: 0 },
+        latencyMs: 80,
+      };
+    }
+    return modelOrig(opts);
+  };
+  const modelSession = modelEngine.createSession({
+    prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+    scenarioId: 'sprint-priority-engine',
+    projectName: 'model-build',
+    simulateBrokenFirstPass: true,
+  });
+  try {
+    await modelEngine.executeSwarm(modelSession);
+    assert.ok(modelSession.files['app.js'].content.includes('model-built app.js'));
+    assert.strictEqual(modelSession.files['app.js'].source, 'model');
+    assert.strictEqual(modelSession.files['app.js'].author, '@builder');
+    assert.strictEqual(modelSession.files['test.js'].source, 'model');
+    assert.ok(modelSession.fileHistory['domain.js'].some((h) => h.source === 'scenario_fixture'));
+    assert.ok(modelSession.fileHistory['domain.js'].some((h) => h.source === 'fault_injection'));
+    assert.ok(modelSession.fileHistory['domain.js'].some((h) => h.source === 'deterministic_restore'));
+    assert.deepStrictEqual(JSON.parse(modelSession.files['benchmark.json'].content).healedBy, ['deterministic_restore']);
+    assert.ok(modelSession.verificationRuns[modelSession.verificationRuns.length - 1].passed);
+    console.log('[PASS] 9.4: a parsed @builder build writes model files; domain.js fixture + rework heal still work');
+  } finally {
+    fs.rmSync(modelSession.workspaceDir, { recursive: true, force: true });
+  }
+
+  const truncEngine = new MuseSwarmEngine({ offline: true, allowOfflineFallback: true });
+  const truncOrig = truncEngine.client.chatCompletion.bind(truncEngine.client);
+  let buildCalls = 0;
+  truncEngine.client.chatCompletion = async (opts) => {
+    const user = opts.messages[opts.messages.length - 1].content;
+    if (opts.agentId === 'builder' && !user.includes('Rework Attempt #')) {
+      buildCalls += 1;
+      return {
+        id: `builder-trunc-${buildCalls}`,
+        simulated: false,
+        content: '',
+        reasoningContent: 'still thinking about app.js '.repeat(200),
+        finishReason: 'length',
+        usage: { promptTokens: 10, completionTokens: 16000, totalTokens: 16010, reasoningTokens: 15900 },
+        latencyMs: 100,
+      };
+    }
+    return truncOrig(opts);
+  };
+  const truncSession = truncEngine.createSession({
+    prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+    scenarioId: 'sprint-priority-engine',
+    projectName: 'trunc-build',
+  });
+  try {
+    await truncEngine.executeSwarm(truncSession);
+    assert.strictEqual(buildCalls, 2, 'truncated build retries once');
+    assert.ok(truncSession.modelReplies.some((r) => r.phase === 'build' && r.parse.retryReason === 'finish_reason_length_no_files'));
+    assert.ok(truncSession.modelReplies.some((r) => r.phase === 'build_retry'));
+    assert.strictEqual(truncSession.files['app.js'].source, 'scenario_fixture');
+    assert.strictEqual(truncSession.files['app.js'].author, 'engine');
+    console.log('[PASS] 9.5: truncated @builder build keeps engine:scenario_fixture attribution after retry');
+  } finally {
+    fs.rmSync(truncSession.workspaceDir, { recursive: true, force: true });
+  }
 }
 
 async function main() {
