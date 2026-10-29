@@ -747,6 +747,9 @@ class MuseSwarmEngine extends EventEmitter {
         avgLatencyMs: tel.avgLatencyMs,
         p50LatencyMs: tel.p50LatencyMs,
         p95LatencyMs: tel.p95LatencyMs,
+        minLatencyMs: tel.minLatencyMs,
+        maxLatencyMs: tel.maxLatencyMs,
+        latencies: tel.latencies || [],
         retryCount: tel.retryCount,
       },
       generatedAt: new Date().toISOString(),
@@ -955,7 +958,7 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Every file's 
       const callBuilder = (tight) =>
         this.client.chatCompletion({
           agentId: 'builder',
-          maxTokens: 16000,
+          maxTokens: 32000,
           timeoutMs: CONFIG.longRequestTimeoutMs,
           temperature: tight ? 0.1 : 0.2,
           reasoningEffort: 'low',
@@ -992,11 +995,8 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Every file's 
         ? { ...(extractJsonBlock(builderRes.content) || {}), files: builderPatch.files }
         : null;
       const builderSource = replySource(builderRes);
-      if (session.scenarioId && session._cleanArtifacts) {
-        for (const relPath of ['domain.js', 'app.js', 'test.js', 'index.html']) {
-          this.writeWorkspaceFile(session, relPath, session._cleanArtifacts[relPath], 'engine', 'scenario_fixture');
-        }
-      } else if (builderPatch.files['app.js']) {
+      const writtenByBuilder = [];
+      if (Object.keys(builderPatch.files).length) {
         const fileEntries = Object.entries(builderPatch.files).filter(([, code]) => typeof code === 'string');
         await this.runParallelTasks(
           session,
@@ -1008,11 +1008,19 @@ Return ONLY one strict JSON object (no prose, no markdown fences). Every file's 
           })),
           async (spec) => {
             this.writeWorkspaceFile(session, spec.relPath, spec.code, '@builder', builderSource);
+            writtenByBuilder.push(spec.relPath);
             return { path: spec.relPath, bytes: Buffer.byteLength(spec.code, 'utf8') };
           }
         );
-      } else {
-        // Fallback resilient implementation if JSON parsing had unescaped characters or offline mode
+      }
+      // Scenario fixtures fill gaps the model omitted (always domain.js) or a truncated reply.
+      if (session.scenarioId && session._cleanArtifacts) {
+        for (const relPath of ['domain.js', 'app.js', 'test.js', 'index.html']) {
+          if (!writtenByBuilder.includes(relPath)) {
+            this.writeWorkspaceFile(session, relPath, session._cleanArtifacts[relPath], 'engine', 'scenario_fixture');
+          }
+        }
+      } else if (!writtenByBuilder.includes('app.js')) {
         this.writeFallbackArtifacts(session);
       }
 

@@ -216,6 +216,7 @@ class BasetenMuseClient {
       p95LatencyMs: computePercentile(sorted, 95),
       minLatencyMs: sorted.length > 0 ? Math.round(sorted[0]) : 0,
       maxLatencyMs: sorted.length > 0 ? Math.round(sorted[sorted.length - 1]) : 0,
+      latencies: latencies.map((ms) => Math.round(ms)),
       retryCount: this.retryCount - snap.retryCount,
       errorCount: this.errorCount - snap.errorCount,
       agentBreakdown,
