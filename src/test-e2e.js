@@ -1009,6 +1009,55 @@ async function testLeadRetryBuilderBudgetAndSessionTelemetry() {
   } finally {
     fs.rmSync(truncSession.workspaceDir, { recursive: true, force: true });
   }
+
+  const reworkEngine = new MuseSwarmEngine({ offline: true, allowOfflineFallback: true });
+  const reworkOrig = reworkEngine.client.chatCompletion.bind(reworkEngine.client);
+  let reworkCalls = 0;
+  reworkEngine.client.chatCompletion = async (opts) => {
+    const user = opts.messages[opts.messages.length - 1].content;
+    if (opts.agentId === 'builder' && user.includes('Rework Attempt #')) {
+      reworkCalls += 1;
+      assert.strictEqual(opts.maxTokens, 32000, 'rework max_tokens must be 32000');
+      assert.strictEqual(opts.reasoningEffort, 'low');
+      assert.strictEqual(opts.timeoutMs, CONFIG.longRequestTimeoutMs);
+      assert.ok(user.includes('--- domain.js ---'));
+      assert.ok(user.includes('--- test.js (read-only) ---'));
+      assert.ok(!user.includes('const assert = require'));
+      if (reworkCalls === 1) {
+        assert.ok(!user.includes('ran out of tokens'));
+        return {
+          id: 'rework-trunc',
+          simulated: false,
+          content: '',
+          reasoningContent: 'still thinking about domain.js '.repeat(200),
+          finishReason: 'length',
+          usage: { promptTokens: 10, completionTokens: 16000, totalTokens: 16010, reasoningTokens: 15900 },
+          latencyMs: 100,
+        };
+      }
+      assert.ok(user.includes('ran out of tokens'));
+      return reworkOrig(opts);
+    }
+    return reworkOrig(opts);
+  };
+  const reworkSession = reworkEngine.createSession({
+    prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+    scenarioId: 'sprint-priority-engine',
+    projectName: 'rework-budget',
+    simulateBrokenFirstPass: true,
+  });
+  try {
+    await reworkEngine.executeSwarm(reworkSession);
+    assert.ok(reworkCalls >= 2, 'rework retries once on empty finishReason=length');
+    const first = reworkSession.modelReplies.find((r) => r.phase === 'rework_fix');
+    const retry = reworkSession.modelReplies.find((r) => r.phase === 'rework_fix_retry');
+    assert.ok(first && first.finishReason === 'length' && first.parse.retryReason === 'finish_reason_length_empty_content');
+    assert.ok(retry && retry.parse.retryOf === 'rework_fix');
+    assert.deepStrictEqual(JSON.parse(reworkSession.files['benchmark.json'].content).healedBy, ['deterministic_restore']);
+    console.log('[PASS] 9.6: @builder rework uses 32000 tokens, reasoning_effort=low, compact prompt, retries empty length');
+  } finally {
+    fs.rmSync(reworkSession.workspaceDir, { recursive: true, force: true });
+  }
 }
 
 async function testProtectedScenarioTests() {
@@ -1221,26 +1270,141 @@ const __assert = require('assert');
   try {
     await engineD.executeSwarm(sessionD);
     const pass1 = sessionD.verificationRuns.find((r) => r.phase === 'pass1_initial');
-    assert.strictEqual(pass1.passed, false, 'Pass 1 independent grade must fail a leftover app.js assert shim');
-    assert.ok(pass1.checks.some((c) => c.name === 'independent_grade' && c.passed === false));
+    assert.strictEqual(pass1.passed, false, 'Pass 1 must fail when the SLA fault is in domain.js');
+    assert.ok(
+      sessionD.fileHistory['app.js'].some((h) => h.source === 'rejected_contract' && h.content.includes('__assert')),
+      'build-time app.js assert shim must be rejected_contract'
+    );
+    assert.ok(sessionD.files['app.js'].content.includes("require('./domain.js')"));
+    assert.notStrictEqual(sessionD.files['app.js'].source, 'model');
     const healedD = (sessionD.reworkSummary || []).map((c) => c.healedBy);
     assert.ok(!healedD.includes('model'), 'unfixed domain.js must not be credited to model even if workspace tests pass');
     assert.ok(!(JSON.parse(sessionD.files['benchmark.json'].content).healedBy || []).includes('model'));
-    assert.ok(
-      sessionD.fileHistory['domain.js'].some((h) => h.source === 'rejected_grading_check' && h.content.includes('pretend fix')),
-      'fake domain.js patch must be recorded as rejected_grading_check'
-    );
-    const replyD = (sessionD.modelReplies || []).find((r) => r.phase === 'rework_fix');
-    assert.ok(replyD && replyD.parse.modelPatch === 'rejected_grading_check');
-    assert.ok((replyD.parse.rejectedGradingCheckFiles || []).includes('domain.js'));
-    assert.ok(!sessionD.reworkSummary.some((c) => (c.filesPatchedByModel || []).includes('domain.js')));
-    if (sessionD.rubricEvaluation?.verdict === 'VERIFIED_PASS') {
-      assert.ok(!sessionD.files['domain.js'].content.includes('pass-1 fault'), 'must not be VERIFIED_PASS while the SLA fault remains');
-      assert.ok(healedD.includes('deterministic_restore'));
-    }
-    console.log('[PASS] 10.3b: leftover app.js shim + unfixed domain.js is rejected_grading_check, not healedBy model');
+    assert.ok(!sessionD.files['domain.js'].content.includes('pass-1 fault'));
+    assert.ok(healedD.includes('deterministic_restore'));
+    console.log('[PASS] 10.3b: leftover app.js shim + unfixed domain.js is not healedBy model');
   } finally {
     fs.rmSync(sessionD.workspaceDir, { recursive: true, force: true });
+  }
+
+  // Path D (Judy probe): domain.js that disables assert then keeps the SLA fault.
+  const engineE = new MuseSwarmEngine({ offline: true, allowOfflineFallback: true });
+  const origE = engineE.client.chatCompletion.bind(engineE.client);
+  let sessionE;
+  engineE.client.chatCompletion = async (opts) => {
+    const user = opts.messages[opts.messages.length - 1].content;
+    if (opts.agentId === 'builder' && user.includes('Rework Attempt #')) {
+      const faulty = sessionE.files['domain.js'].content;
+      return {
+        id: 'judy-probe-domain-shim',
+        simulated: false,
+        content: JSON.stringify({
+          files: [{ path: 'domain.js', content: "{const a=require('assert');for(const k of Object.keys(a))a[k]=()=>{};}\n" + faulty }],
+        }),
+        finishReason: 'stop',
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, reasoningTokens: 0 },
+        latencyMs: 5,
+      };
+    }
+    return origE(opts);
+  };
+  sessionE = engineE.createSession({
+    prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+    scenarioId: 'sprint-priority-engine',
+    projectName: 'judy-probe-domain-shim',
+    simulateBrokenFirstPass: true,
+  });
+  try {
+    await engineE.executeSwarm(sessionE);
+    const healedE = (sessionE.reworkSummary || []).map((c) => c.healedBy);
+    const benchE = JSON.parse(sessionE.files['benchmark.json'].content);
+    assert.ok(!healedE.includes('model'), 'path D must not credit healedBy model');
+    assert.ok(!(benchE.healedBy || []).includes('model'));
+    assert.ok(
+      sessionE.fileHistory['domain.js'].some((h) => h.source === 'rejected_grading_check' && h.content.includes("require('assert')")),
+      'domain.js assert shim must be rejected_grading_check'
+    );
+    assert.ok(!sessionE.files['domain.js'].content.includes('pass-1 fault'), 'fault must be gone via deterministic_restore');
+    assert.ok(healedE.includes('deterministic_restore'));
+    assert.ok(!sessionE.files['domain.js'].content.includes("require('assert')"));
+    console.log('[PASS] 10.4: path D domain.js assert shim is not credited to model; fault gone via deterministic_restore');
+  } finally {
+    fs.rmSync(sessionE.workspaceDir, { recursive: true, force: true });
+  }
+
+  const noDomainApp = 'module.exports = { TaskPriorityEngine: class { addItem() { return { slaBreached: true }; } } }; globalThis.AppCore = module.exports;\n';
+  const engineF = new MuseSwarmEngine({ offline: true, allowOfflineFallback: true });
+  const origF = engineF.client.chatCompletion.bind(engineF.client);
+  engineF.client.chatCompletion = async (opts) => {
+    const user = opts.messages[opts.messages.length - 1].content;
+    if (opts.agentId === 'builder' && !user.includes('Rework Attempt')) {
+      return {
+        id: 'no-domain-require',
+        simulated: false,
+        content: JSON.stringify({
+          files: [
+            { path: 'app.js', content: noDomainApp },
+            { path: 'index.html', content: artifacts['index.html'] },
+          ],
+        }),
+        finishReason: 'stop',
+        usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20, reasoningTokens: 0 },
+        latencyMs: 20,
+      };
+    }
+    return origF(opts);
+  };
+  const sessionF = engineF.createSession({
+    prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+    scenarioId: 'sprint-priority-engine',
+    projectName: 'no-domain-app',
+    simulateBrokenFirstPass: true,
+  });
+  try {
+    await engineF.executeSwarm(sessionF);
+    assert.ok(
+      sessionF.fileHistory['app.js'].some((h) => h.source === 'rejected_contract' && h.content.includes('TaskPriorityEngine')),
+      'build app.js that never requires ./domain.js must be rejected'
+    );
+    assert.ok(sessionF.files['app.js'].content.includes("require('./domain.js')"), 'fixture app.js must replace the rejected build');
+    assert.notStrictEqual(sessionF.files['app.js'].source, 'model');
+    assert.ok(!sessionF.files['domain.js'].content.includes('pass-1 fault'));
+    assert.strictEqual(sessionF.files['test.js'].content, artifacts['test.js']);
+    assert.ok(sessionF.files['index.html'].content.length > 0);
+    console.log('[PASS] 10.5: build app.js without require(./domain.js) is rejected and overridden by the fixture');
+    console.log('[PASS] 10.7: restore/fallback puts scenario fixtures back (app.js, test.js, domain.js)');
+  } finally {
+    fs.rmSync(sessionF.workspaceDir, { recursive: true, force: true });
+  }
+
+  const engineG = new MuseSwarmEngine({ offline: true, allowOfflineFallback: true });
+  const origTests = engineG.runWorkspaceTests.bind(engineG);
+  engineG.runWorkspaceTests = function (session, label) {
+    const run = origTests(session, label);
+    run.passed = false;
+    run.checks.push({ name: 'forced_fail', passed: false, detail: 'all verification runs forced to fail' });
+    run.failedCount = (run.failedCount || 0) + 1;
+    run.passedCount = run.checks.filter((c) => c.passed).length;
+    return run;
+  };
+  const sessionG = engineG.createSession({
+    prompt: 'Build a Real-Time Engineering Sprint & Incident Priority Engine',
+    scenarioId: 'sprint-priority-engine',
+    projectName: 'all-fail-verdict',
+    simulateBrokenFirstPass: true,
+  });
+  try {
+    await engineG.executeSwarm(sessionG);
+    assert.ok((sessionG.verificationRuns || []).length >= 1);
+    assert.ok(sessionG.verificationRuns.every((r) => r.passed === false), 'every verification run failed');
+    assert.notStrictEqual(sessionG.rubricEvaluation.verdict, 'VERIFIED_PASS');
+    assert.strictEqual(sessionG.rubricEvaluation.verdict, 'VERIFIED_FAIL');
+    assert.ok(sessionG.rubricEvaluation.qualityScore < 97, 'failed runs must not report a passing-looking 97 score');
+    const benchG = JSON.parse(sessionG.files['benchmark.json'].content);
+    assert.notStrictEqual(benchG.rubric?.verdict, 'VERIFIED_PASS');
+    console.log('[PASS] 10.6: all-failed verification runs never yield VERIFIED_PASS');
+  } finally {
+    fs.rmSync(sessionG.workspaceDir, { recursive: true, force: true });
   }
 }
 
