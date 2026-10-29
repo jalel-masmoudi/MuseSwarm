@@ -316,6 +316,9 @@ class BasetenMuseClient {
             agentId,
             simulated: true,
             latencyMs: simResult.latencyMs,
+            finishReason: simResult.finishReason,
+            content: simResult.content,
+            reasoningContent: simResult.reasoningContent,
             usage: simResult.usage,
             telemetry: simResult.telemetry,
           });
@@ -425,7 +428,11 @@ class BasetenMuseClient {
           onProgress({
             type: 'llm_complete',
             agentId,
+            simulated: false,
             latencyMs,
+            finishReason: result.finishReason,
+            content: result.content,
+            reasoningContent: result.reasoningContent,
             usage: result.usage,
             telemetry: result.telemetry,
           });
