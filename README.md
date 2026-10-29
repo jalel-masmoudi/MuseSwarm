@@ -70,3 +70,33 @@ node src/cli.js run --scenario oncall-fairness-scheduler
 `POST /api/swarm/run` and `POST /api/swarm/rework` accept `scenarioId`. Each preset writes `brief.md`, `runbook.md`, `domain.js`, `app.js`, `test.js`, a dark-mode `index.html`, `README.md`, and `benchmark.json`. `GET /api/scenarios` returns the presets (also embedded on `GET /api/status`).
 
 A rework run (`simulateBrokenFirstPass`, or `POST /api/swarm/rework`) injects one realistic Pass 1 fault, fails `node test.js`, then `@builder` restores the healed source. Every `writeWorkspaceFile` appends a `fileHistory` snapshot. The heal records a unified diff on `reworkDiffs` (`-` broken line, `+` healed line, plus before/after snippets). Read them from the session payload or `GET /api/session/:id/diffs` (`GET /api/swarm/diffs` accepts `?sessionId=`). The same arrays are stored in `benchmark.json`.
+
+---
+
+## Hosted demo
+
+A judge-facing Studio URL is **TBD** (filled in after the first Render/Fly deploy). Until then, run the same mode locally:
+
+```bash
+MUSE_SWARM_PUBLIC_DEMO=1 npm start
+```
+
+`MUSE_SWARM_PUBLIC_DEMO=1` loads the three committed golden live sessions (`workspaces/golden-*`), serves them through the existing session / diffs / SSE / preview APIs, and **disables live Baseten even if `BASETEN_API_KEY` is present**. POST `/api/swarm/run` and `/api/swarm/rework` still run, but only as offline deterministic heals (`offline_fixture` / `deterministic_restore`) — they are rate-limited and capped on concurrent sandbox processes. `GET /api/status` and `GET /api/health` report `mode: public-demo`. `GET /api/events?sessionId=<golden-id>` replays the recorded agent/file/verification events with paced SSE.
+
+| workspace | session | healedBy |
+| --- | --- | --- |
+| `golden-sprint-priority-engine-bvy7` | `swarm-mvti4gn7-bvy7` | `model` |
+| `golden-feature-flag-rollout-fxhd` | `swarm-mvti5hti-fxhd` | `model` |
+| `golden-oncall-fairness-scheduler-feo0` | `swarm-mvti6mtl-feo0` | `deterministic_restore` |
+
+That is the honest **2-of-3** live-heal claim (sprint + flags by Muse Spark; oncall restored by the engine after the model reintroduced a sort-direction bug).
+
+### Deploy
+
+- `Dockerfile` — Node 22 LTS (`node:22-alpine`), non-root `museswarm` user, `PORT` (default 4321), `MUSE_SWARM_PUBLIC_DEMO=1`, healthcheck `GET /api/health`.
+- `render.yaml` — free-tier Docker web service, `healthCheckPath: /api/health`.
+- `fly.toml` — free-tier shared 256 MB VM, auto-stop, HTTP check on `/api/health`.
+
+**Static UI choice:** `.dockerignore` excludes `museswarm-studio/dist`, `node_modules`, `.env*`, and generated workspaces (goldens are kept). `server.js` serves `museswarm-studio/dist` *before* `public/` when dist exists; without dist the image serves `public/`, which the Studio bundle PR rebuilds. We chose this over a Docker multi-stage Studio build so this PR never ships a stale Vite bundle and never edits `museswarm-studio/**` or `public/**`.
+
+**Why not Vercel / serverless:** the dashboard is a long-lived Node process. It holds SSE connections, writes `workspaces/`, and spawns `node --check` / `node test.js` child processes with timeouts. Serverless request limits and a read-only filesystem are a poor fit, so this repo ships Docker + Render/Fly instead of a `vercel.json`.

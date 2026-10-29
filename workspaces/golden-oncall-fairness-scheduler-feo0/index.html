@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>On-Call Scheduler</title><style>:root{--bg:#0f1117;--card:#1a1d27;--acc:#6c5ce7;--txt:#e0e0e0;--mut:#888}*{box-sizing:border-box;margin:0;padding:0}body{background:var(--bg);color:var(--txt);font-family:system-ui,sans-serif;padding:16px}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}h1{font-size:1.2rem}.card{background:var(--card);border-radius:10px;padding:12px;margin-bottom:12px}input,select,button{padding:6px 10px;border-radius:6px;border:1px solid #333;background:#222;color:var(--txt)}button{background:var(--acc);cursor:pointer;border:none}#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}.shift{padding:8px;border-radius:8px;font-size:.8rem}.bar{height:10px;background:#333;border-radius:5px;overflow:hidden}.fill{height:100%;background:var(--acc)}</style></head><body>
+<header><h1>On-Call Scheduler</h1><div>Fairness: <b id="fair">100</b></div></header>
+<div class="card"><h3>Roster</h3><input id="ename" placeholder="Name"><input id="eoff" type="number" step="0.5" value="0" style="width:80px"><input id="erole" placeholder="Role" style="width:100px"><button onclick="addEng()">Add</button><div id="roster"></div></div>
+<div class="card"><h3>Schedule</h3><input id="sdate" type="date" value="2025-01-06"><input id="sdays" type="number" value="7" style="width:60px"><select id="sdur"><option value="8">8h</option><option value="12" selected>12h</option><option value="24">24h</option></select><button onclick="gen()">Generate</button><button onclick="reb()">Rebalance</button><button onclick="csv()">CSV</button><div id="grid"></div><div id="rpt" style="font-size:.8rem;color:var(--mut)"></div></div>
+<div class="card"><h3>Fatigue</h3><div id="fatigue"></div></div>
+<div class="card"><h3>Incident</h3><select id="ieng"></select><select id="isev"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select><input id="idur" type="number" placeholder="mins" value="30" style="width:70px"><input id="idesc" placeholder="desc"><button onclick="logI()">Log</button></div>
+<script src="app.js"></script>
+<script>
+var team=AppCore.createTeam('Alpha');
+function refresh(){
+ document.getElementById('fair').textContent=Math.round(AppCore.calculateFairnessIndex(team)*100);
+ var r=document.getElementById('roster');r.innerHTML=team.engineers.map(e=>e.name+' ('+e.timezoneLabel+') <a href="#" onclick="delE(\''+e.id+'\')">x</a>').join(' | ');
+ var sel=document.getElementById('ieng');sel.innerHTML=team.engineers.map(e=>'<option value="'+e.id+'">'+e.name+'</option>').join('');
+ var g=document.getElementById('grid');g.innerHTML=team.schedule.map(s=>'<div class="shift" style="background:'+color(s.engineerId)+'" title="'+AppCore.getHandoffDisplay(s)+'">'+s.date+' '+s.engineerName+'<br><small>'+AppCore.getHandoffDisplay(s)+'</small></div>').join('');
+ var f=document.getElementById('fatigue');f.innerHTML=AppCore.getFatigueReport(team).map(x=>'<div>'+x.engineerName+': '+x.fatigueScore+' ('+x.level+')<div class="bar"><div class="fill" style="width:'+x.fatigueScore+'%"></div></div></div>').join('');
+}
+function color(id){if(!id)return'#333';var h=0;for(var i=0;i<id.length;i++)h=(h*31+id.charCodeAt(i))%360;return 'hsl('+h+',60%,30%)';}
+function addEng(){try{AppCore.addEngineer(team,{name:ename.value,timezoneOffset:parseFloat(eoff.value),role:erole.value});refresh();}catch(e){alert(e.message)}}
+function delE(id){AppCore.removeEngineer(team,id);refresh();}
+function gen(){try{AppCore.generateSchedule(team,new Date(sdate.value).toISOString(),parseInt(sdays.value),{shiftDurationHours:parseInt(sdur.value)});refresh();}catch(e){alert(e.message)}}
+function reb(){var r=AppCore.autoRebalance(team);document.getElementById('rpt').textContent=r.reason+' swaps:'+r.swaps.length;refresh();}
+function csv(){var c=AppCore.exportScheduleCSV(team.schedule);var b=new Blob([c],{type:'text/csv'});var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='schedule.csv';a.click();}
+function logI(){try{AppCore.logIncident(team,{engineerId:ieng.value,severity:parseInt(isev.value),durationMinutes:parseInt(idur.value),timestampUTC:new Date().toISOString(),description:idesc.value});refresh();}catch(e){alert(e.message)}}
+refresh();
+</script></body></html>

@@ -1,0 +1,31 @@
+# Fly.io free-tier defaults. Machines auto-stop when idle.
+# Static UI comes from public/ (museswarm-studio/dist is dockerignored).
+app = "museswarm"
+primary_region = "iad"
+
+[build]
+
+[env]
+  MUSE_SWARM_PUBLIC_DEMO = "1"
+  NODE_ENV = "production"
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  path = "/api/health"
+  timeout = "5s"
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

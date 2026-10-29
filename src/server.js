@@ -4,9 +4,25 @@ const path = require('path');
 const { CONFIG } = require('./config');
 const { executeToolCall } = require('./mcp-server');
 const { MuseSwarmEngine, AGENT_PROFILES, SCENARIO_PRESETS, serializeScenarios } = require('./swarm-engine');
+const {
+  annotateGoldenSession,
+  isGoldenWorkspaceDir,
+  goldenCatalog,
+  createRateLimiter,
+  createConcurrencyGate,
+  clientKey,
+  buildReplayEvents,
+  replayEventsToSse,
+} = require('./public-demo');
 
-const engine = new MuseSwarmEngine();
+const engine = new MuseSwarmEngine(
+  CONFIG.publicDemo ? { offline: true, allowOfflineFallback: true } : {}
+);
 const sseClients = new Set();
+const demoRateLimiter = CONFIG.publicDemo
+  ? createRateLimiter({ limit: CONFIG.publicDemoPostLimit, windowMs: CONFIG.publicDemoPostWindowMs })
+  : null;
+const sandboxGate = CONFIG.publicDemo ? createConcurrencyGate(CONFIG.publicDemoMaxConcurrent) : null;
 
 function normalizeAgentId(rawAgent) {
   const cleaned = String(rawAgent || 'architect').trim().replace(/^@+/, '').toLowerCase();
@@ -50,6 +66,9 @@ function loadExistingWorkspaces() {
           saved.fileHistory = saved.fileHistory || {};
           engine.sessions.set(saved.id, saved);
           engine.activeSessionId = saved.id;
+          if (isGoldenWorkspaceDir(entry.name) || saved.golden || saved.readOnly) {
+            annotateGoldenSession(saved, wsDir);
+          }
         } catch (_) {}
       } else if (fs.existsSync(path.join(wsDir, 'app.js'))) {
         try {
@@ -98,8 +117,15 @@ function loadExistingWorkspaces() {
 
 loadExistingWorkspaces();
 
+function demoMode() {
+  return CONFIG.publicDemo ? 'public-demo' : null;
+}
+
 function getEffectiveTelemetry() {
   const liveTel = engine.client.getTelemetry();
+  if (CONFIG.publicDemo) {
+    return { ...liveTel, hasApiKey: false, mode: 'public-demo' };
+  }
   if (liveTel.totalCalls > 0) return liveTel;
   const active = engine.activeSessionId ? engine.sessions.get(engine.activeSessionId) : null;
   if (active && active.telemetry && active.telemetry.totalCalls > 0) {
@@ -197,6 +223,11 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
 
+  if (CONFIG.publicDemo && req.method === 'POST' && demoRateLimiter && !demoRateLimiter.allow(clientKey(req))) {
+    res.setHeader('Retry-After', String(Math.ceil(CONFIG.publicDemoPostWindowMs / 1000)));
+    return sendJson(res, 429, { ok: false, error: 'Rate limit exceeded', mode: 'public-demo' });
+  }
+
   // SSE stream
   if (pathname === '/api/events' && req.method === 'GET') {
     res.writeHead(200, {
@@ -205,9 +236,16 @@ const server = http.createServer(async (req, res) => {
       Connection: 'keep-alive',
       'Access-Control-Allow-Origin': '*',
     });
-    res.write(`data: ${JSON.stringify({ eventType: 'connected', telemetry: getEffectiveTelemetry() })}\n\n`);
+    res.write(`data: ${JSON.stringify({ eventType: 'connected', telemetry: getEffectiveTelemetry(), mode: demoMode() })}\n\n`);
     sseClients.add(res);
     req.on('close', () => sseClients.delete(res));
+    const replayId = url.searchParams.get('sessionId');
+    if (CONFIG.publicDemo && replayId) {
+      const replaySession = findSession(replayId);
+      if (replaySession) {
+        replayEventsToSse(res, buildReplayEvents(replaySession)).catch(() => {});
+      }
+    }
     return;
   }
 
@@ -221,11 +259,13 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, {
       ok: true,
       status: 'healthy',
+      mode: demoMode() || getEffectiveTelemetry().mode,
       uptimeSec: Math.round(process.uptime()),
       modelId: CONFIG.modelId,
       endpoint: CONFIG.basetenBaseUrl,
       telemetry: getEffectiveTelemetry(),
       sessionsCount: sessions.length,
+      goldens: goldenCatalog(engine),
       benchmarks,
     });
   }
@@ -235,11 +275,13 @@ const server = http.createServer(async (req, res) => {
     const sessions = Array.from(engine.sessions.values()).map((s) => engine.serializeSession(s));
     return sendJson(res, 200, {
       ok: true,
+      mode: demoMode() || getEffectiveTelemetry().mode,
       modelId: CONFIG.modelId,
       endpoint: CONFIG.basetenBaseUrl,
       agents: AGENT_PROFILES,
       telemetry: getEffectiveTelemetry(),
       sessions,
+      goldens: goldenCatalog(engine),
       activeSessionId: engine.activeSessionId,
       scenarios: serializeScenarios(),
     });
@@ -291,6 +333,7 @@ const server = http.createServer(async (req, res) => {
 
   // Trigger a new multi-agent swarm run (supports simulateBrokenFirstPass for self-heal rework demo)
   if ((pathname === '/api/swarm/run' || pathname === '/api/swarm/rework') && req.method === 'POST') {
+    let gateHeld = false;
     try {
       const body = await readJsonBody(req);
       const scenarioId = body.scenarioId || body.scenario || null;
@@ -305,6 +348,12 @@ const server = http.createServer(async (req, res) => {
       if (!prompt) {
         return sendJson(res, 400, { ok: false, error: 'Prompt is required' });
       }
+      if (CONFIG.publicDemo && sandboxGate) {
+        if (!sandboxGate.tryEnter()) {
+          return sendJson(res, 503, { ok: false, error: 'Too many concurrent sandbox runs', mode: 'public-demo' });
+        }
+        gateHeld = true;
+      }
       const simulateBrokenFirstPass =
         pathname === '/api/swarm/rework' || Boolean(body.simulateBrokenFirstPass || body.broken);
       const session = engine.createSession({
@@ -314,22 +363,31 @@ const server = http.createServer(async (req, res) => {
         scenarioId,
       });
 
-      if (body.sync === true || body.async === false) {
+      const sync = body.sync === true || body.async === false;
+      if (sync) {
         await engine.executeSwarm(session);
       } else {
         // Run asynchronously so client watches SSE events in real time
-        engine.executeSwarm(session).catch((err) => {
-          console.error('Swarm run error:', err);
-        });
+        gateHeld = false;
+        engine.executeSwarm(session)
+          .catch((err) => {
+            console.error('Swarm run error:', err);
+          })
+          .finally(() => {
+            if (CONFIG.publicDemo && sandboxGate) sandboxGate.leave();
+          });
       }
       return sendJson(res, 200, {
         ok: true,
         simulateBrokenFirstPass,
         scenarioId: session.scenarioId,
+        mode: demoMode() || undefined,
         session: engine.serializeSession(session),
       });
     } catch (err) {
       return sendJson(res, 500, { ok: false, error: err.message });
+    } finally {
+      if (gateHeld && sandboxGate) sandboxGate.leave();
     }
   }
 
@@ -426,7 +484,9 @@ const server = http.createServer(async (req, res) => {
     return res.end(fs.readFileSync(targetPath));
   }
 
-  // Serve static files from museswarm-studio/dist first, then /public
+  // Serve static files from museswarm-studio/dist first, then /public.
+  // Docker images omit dist (see .dockerignore) so hosted demo serves public/,
+  // which the Studio bundle PR rebuilds. Dist is never copied stale into the image.
   const studioDistDir = path.join(CONFIG.rootDir, 'museswarm-studio', 'dist');
   const publicDir = path.join(CONFIG.rootDir, 'public');
   const staticRoots = [studioDistDir, publicDir].filter((d) => fs.existsSync(d));
@@ -458,7 +518,12 @@ if (require.main === module) {
   server.listen(CONFIG.port, () => {
     console.log(`\n🚀 MuseSwarm Live Studio running at http://localhost:${CONFIG.port}`);
     console.log(`   Model    : ${CONFIG.modelId}`);
-    console.log(`   Endpoint : ${CONFIG.basetenBaseUrl} (2M TPM capacity)\n`);
+    console.log(`   Endpoint : ${CONFIG.basetenBaseUrl} (2M TPM capacity)`);
+    if (CONFIG.publicDemo) {
+      console.log(`   Mode     : public-demo (goldens loaded, live Baseten disabled)\n`);
+    } else {
+      console.log('');
+    }
   });
 }
 
