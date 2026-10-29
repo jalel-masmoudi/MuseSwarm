@@ -51,4 +51,22 @@ npm start
 Then open **http://localhost:4321** in your browser to watch the bots collaborate in real time and preview the generated web app.
 
 ### 5. Use Inside Cursor IDE
-Open this folder in **Cursor**. Cursor automatically detects `.cursor/mcp.json` (`muse-swarm` MCP server) and `.cursor/rules/muse-swarm.mdc`.
+Open this folder in **Cursor**. Cursor automatically detects `.cursor/mcp.json` (`muse-swarm` MCP server) and `.cursor/rules/muse-swarm.mdc`. The same four tools are also callable from the Web Studio over `POST /api/mcp/invoke` with `{ "tool": "muse_swarm_list_agents", "arguments": {} }` (or `{ "name", "args" }`). The response is the MCP JSON-RPC result plus `latencyMs`.
+
+### 6. Judge scenarios and the Pass 1 → Pass 2 diff
+Three production scenarios ship as presets in `src/scenarios.js` and are exported as `SCENARIO_PRESETS`:
+
+| id | What it builds |
+| --- | --- |
+| `sprint-priority-engine` | Weighted impact/urgency/effort queue and a minute-based SLA breach detector |
+| `feature-flag-rollout` | FNV-1a percentage bucketing and a canary error-rate circuit breaker |
+| `oncall-fairness-scheduler` | Timezone-aware handoffs, a Jain fairness index, and incident-fatigue rebalance |
+
+```bash
+node src/cli.js run --scenario feature-flag-rollout
+node src/cli.js run --scenario oncall-fairness-scheduler
+```
+
+`POST /api/swarm/run` and `POST /api/swarm/rework` accept `scenarioId`. Each preset writes `brief.md`, `runbook.md`, `domain.js`, `app.js`, `test.js`, a dark-mode `index.html`, `README.md`, and `benchmark.json`. `GET /api/scenarios` returns the presets (also embedded on `GET /api/status`).
+
+A rework run (`simulateBrokenFirstPass`, or `POST /api/swarm/rework`) injects one realistic Pass 1 fault, fails `node test.js`, then `@builder` restores the healed source. Every `writeWorkspaceFile` appends a `fileHistory` snapshot. The heal records a unified diff on `reworkDiffs` (`-` broken line, `+` healed line, plus before/after snippets). Read them from the session payload or `GET /api/session/:id/diffs` (`GET /api/swarm/diffs` accepts `?sessionId=`). The same arrays are stored in `benchmark.json`.

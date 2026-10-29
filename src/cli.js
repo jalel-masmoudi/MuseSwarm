@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { CONFIG } = require('./config');
-const { MuseSwarmEngine, AGENT_PROFILES } = require('./swarm-engine');
+const { MuseSwarmEngine, AGENT_PROFILES, SCENARIO_PRESETS } = require('./swarm-engine');
 
 const COLORS = {
   reset: '\x1b[0m',
@@ -113,21 +113,37 @@ async function main() {
   if (cmd === 'run' || args.includes('--demo')) {
     printBanner();
     const isDemo = args.includes('--demo');
+    const scenarioIdx = args.indexOf('--scenario');
+    let scenarioId = null;
     const customPrompt = args
-      .filter((a) => a !== 'run' && a !== '--demo')
+      .filter((a, i) => {
+        if (a === 'run' || a === '--demo' || a === '--scenario') return false;
+        if (scenarioIdx >= 0 && i === scenarioIdx + 1) {
+          scenarioId = a;
+          return false;
+        }
+        return true;
+      })
       .join(' ')
       .trim();
 
+    const preset = scenarioId ? SCENARIO_PRESETS.find((item) => item.id === scenarioId) : null;
     const prompt =
       customPrompt ||
+      preset?.prompt ||
       (isDemo
         ? 'Build a Real-Time Engineering Sprint & Incident Priority Engine with weighted impact/urgency/effort scoring, SLA breach detector, interactive dark-mode dashboard (index.html), isomorphic core module (app.js), and unit test suite (test.js).'
         : 'Build a Smart API Rate-Limit & Token Budget Calculator with interactive web UI and automated unit tests.');
 
     console.log(`\n${COLORS.bold}Starting Multi-Agent Session:${COLORS.reset} "${prompt}"\n`);
+    if (scenarioId) console.log(`${COLORS.bold}Scenario preset:${COLORS.reset} ${scenarioId}`);
 
     const engine = new MuseSwarmEngine();
-    const session = engine.createSession({ prompt, projectName: isDemo ? 'sprint-priority-engine' : undefined });
+    const session = engine.createSession({
+      prompt,
+      projectName: preset?.projectName || (isDemo ? 'sprint-priority-engine' : undefined),
+      scenarioId: scenarioId || (isDemo ? 'sprint-priority-engine' : undefined),
+    });
 
     engine.on('event', (ev) => {
       if (ev.eventType === 'agent_active') {
@@ -185,7 +201,8 @@ Usage:
   node src/cli.js doctor                  Verify Baseten API key & meta-models/muse-spark-open-1026 connectivity
   node src/cli.js peers                   List specialized MuseSwarm agent profiles & toolsets
   node src/cli.js benchmark               Display telemetry & saved workspace benchmark summaries
-  node src/cli.js run --demo              Run a full live multi-agent bot-to-bot build session
+  node src/cli.js run --demo              Run the sprint-priority-engine judge scenario
+  node src/cli.js run --scenario <id>     Co-build a preset: sprint-priority-engine | feature-flag-rollout | oncall-fairness-scheduler
   node src/cli.js run "<project prompt>"  Co-build any software specification with @architect, @builder, @verifier & @lead
   npm start                               Start the real-time MuseSwarm Web Dashboard & API server
 `);
