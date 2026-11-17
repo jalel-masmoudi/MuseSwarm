@@ -22,8 +22,6 @@ museswarm-demo-v2.mp4
 # Generated workspaces except the committed golden live sessions.
 workspaces/*
 !workspaces/.gitkeep
-!workspaces/golden
-!workspaces/golden/**
 !workspaces/golden-sprint-priority-engine-bvy7
 !workspaces/golden-sprint-priority-engine-bvy7/**
 !workspaces/golden-feature-flag-rollout-fxhd
