@@ -1,5 +1,7 @@
 # MuseSwarm
 
+[![CI](https://github.com/jalel-masmoudi/MuseSwarm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jalel-masmoudi/MuseSwarm/actions/workflows/ci.yml)
+
 MuseSwarm is a Node.js multi-agent code generator. Four LLM roles (`@architect`, `@builder`, `@verifier`, `@lead`) take a software request, plan it on a small Kanban board, write `app.js` / `index.html` / `test.js` into a workspace folder, run `node --check` and `node test.js` on the result, and loop back to `@builder` when a check fails. A web dashboard streams the session over SSE.
 
 The model is Meta's Muse Spark Open (`meta-models/muse-spark-open-1026`) served through Baseten's OpenAI-compatible API. It was built for the Meta Global AI Developer Hackathon (Indie Developer track).
