@@ -1,3 +1,5 @@
+import { MCP_CONFIG } from "./api";
+
 export type AgentId = "architect" | "builder" | "verifier" | "lead";
 export type AgentState = "IDLE" | "THINKING" | "STEERING" | "TESTING";
 export type TaskStatus = "ready" | "in_progress" | "rework" | "done";
@@ -89,22 +91,6 @@ function render(){document.getElementById("list").innerHTML=rank(items,Date.now(
 document.getElementById("f").onsubmit=e=>{e.preventDefault();const v=id=>document.getElementById(id).value;items.push({name:v("n"),impact:+v("i"),urgency:+v("u"),effort:+v("e"),slaHours:v("h")?+v("h"):null,openedAt:Date.now()});e.target.reset();render()};render();
 </script></body></html>`;
 
-export const MCP_JSON = `{
-  "mcpServers": {
-    "muse-swarm": {
-      "command": "npx",
-      "args": ["-y", "muse-swarm", "mcp"],
-      "env": { "BASETEN_API_KEY": "\${env:BASETEN_API_KEY}" },
-      "tools": [
-        "muse_swarm_list_agents",
-        "muse_swarm_ask_agent",
-        "muse_swarm_cobuild",
-        "muse_swarm_telemetry"
-      ]
-    }
-  }
-}`;
-
 export const DEMO_FILES: Record<string, string> = {
   "brief.md": "# Brief — sprint-priority-engine-8z24\n\nBuild a Real-Time Engineering Sprint & Incident Priority Engine.\n\n- Weighted score: impact 0.5 · urgency 0.35 · (10 − effort) 0.15\n- SLA breach detector floats breached items to the top\n- Deliverables: app.js (isomorphic), test.js, index.html",
   "runbook.md": "# Runbook\n\n1. TASK-1 @builder — core engine + unit tests\n2. TASK-2 @builder — interactive UI (depends on TASK-1)\n3. TASK-3 @verifier — sandbox QA + release (depends on TASK-1, TASK-2)\n\nGates: node --check app.js · node --check test.js · node test.js",
@@ -113,7 +99,7 @@ export const DEMO_FILES: Record<string, string> = {
   "index.html": INDEX_HTML.replace("__APP__", "/* app.js inlined */"),
   "README.md": "# Sprint & Incident Priority Engine\n\nCo-built by four Muse Spark Open peer agents via MuseSwarm Studio.\n\n```\nnode test.js   # ALL TESTS PASSED (5/5)\nopen index.html\n```\n\nScore: 98/100 VERIFIED_PASS",
   "benchmark.json": JSON.stringify({ session: "sprint-priority-engine-8z24", model: MODEL, tokens: 16916, reasoningTokens: 8260, calls: 4, retries: 0, p50: 9.2, p95: 18.1, score: 98, verdict: "VERIFIED_PASS" }, null, 2),
-  ".cursor/mcp.json": MCP_JSON,
+  "mcp.json": MCP_CONFIG,
 };
 
 export const DEMO_TASKS: Task[] = [

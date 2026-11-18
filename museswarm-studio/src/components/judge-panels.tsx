@@ -489,7 +489,7 @@ export function McpBridge({
       )}
       <div className="overflow-hidden rounded-xl border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground">
-          <span className="font-mono">.cursor/mcp.json</span>
+          <span className="font-mono">mcp.json</span>
           <button onClick={() => navigator.clipboard.writeText(MCP_CONFIG)} className="text-primary">
             Copy
           </button>
