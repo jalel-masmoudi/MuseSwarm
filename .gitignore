@@ -7,8 +7,6 @@ node_modules/
 workspaces/*
 !workspaces/.gitkeep
 !workspaces/sprint-priority-engine-8z24/
-!workspaces/golden/
-!workspaces/golden/**
 !workspaces/golden-*/
 !workspaces/golden-*/**
 workspaces/*/node_modules/
