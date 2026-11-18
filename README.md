@@ -21,7 +21,9 @@ npm start                     # dashboard on http://localhost:4321
 npm test                      # unit, API and end-to-end tests (offline, no key needed)
 ```
 
-Generated projects land in `workspaces/<slug>-<id>/` together with `.session.json` (messages, Kanban history, file revisions, verification runs) and `benchmark.json`.
+Baseten tip: Muse Spark Open writes its reasoning (`reasoning_content`) before the answer, so set `max_tokens` to at least 1500 on any non-trivial call or the reply can run out before the JSON or code starts.
+
+Generated projects land in `workspaces/<slug>-<id>/` together with `.session.json` (messages, Kanban history, file revisions, verification runs) and `benchmark.json`. `workspaces/sprint-priority-engine-8z24/` is an older committed reference run.
 
 The dashboard is a React app in `museswarm-studio/`. A prebuilt bundle is committed in `public/`. To rebuild it: `cd museswarm-studio && npm ci && npm run build` (the server prefers `museswarm-studio/dist` when it exists).
 

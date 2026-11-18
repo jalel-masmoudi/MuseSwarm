@@ -1,7 +1,7 @@
 # MuseSwarm hosted public-demo image.
 #
 # Static assets: .dockerignore excludes museswarm-studio/dist (and node_modules,
-# .env*, non-golden workspaces). server.js (~line 429) serves dist/ before public/,
+# .env*, non-golden workspaces). server.js serves dist/ before public/,
 # so omitting dist means this image serves public/ — the Studio bundle PR rebuilds
 # that tree. We chose this over a Docker multi-stage `npm run build` of the Studio
 # because museswarm-studio/** and public/** are owned by that bundle PR; copying a
